@@ -49,26 +49,27 @@ data class CameraUiState(
     val focusToken: Long = 0L,
     val lockEpoch: Long = 0L,
     val lensSwitchEpoch: Long = 0L,
+    val frameLocked: Boolean = false,
 )
 
 class CameraViewModel : ViewModel() {
     private val _state = MutableStateFlow(CameraUiState())
     val state: StateFlow<CameraUiState> = _state
 
-    private var lastDecideAt = 0L
-    private var stableLensId: String? = null
-    private var stableFrames = 0
-    private var lastFocusAt = 0L
-    private var lastFocusPoint: Offset? = null
     private var lastAppliedZoom = 1f
     private var userLensUntil = 0L
     private var latestLabels: List<SceneLabel> = emptyList()
     private var latestObjects: List<SceneObject> = emptyList()
-    private var pendingScene: SceneKind = SceneKind.UNKNOWN
-    private var sceneStreak = 0
-    private var alignedStreak = 0
-    private var unalignedStreak = 0
+    private var pendingRecipe: SceneRecipe? = null
+    private var recipeStreak = 0
+    private var committedRecipe: SceneRecipe? = null
+    private var acquireStreak = 0
+    private var unlockSceneStreak = 0
+    private var unlockPanStreak = 0
+    private var subjectMissingSince = 0L
     private var lastHintAt = 0L
+    private var lockedSubjectCenter: Offset? = null
+    private var zoomForRecipe: SceneRecipe? = null
 
     fun loadInventory(inventory: CameraInventory) {
         _state.update {
@@ -104,17 +105,20 @@ class CameraViewModel : ViewModel() {
     fun toggleAi() {
         val enable = !_state.value.aiEnabled
         if (enable) userLensUntil = 0L
-        sceneStreak = 0
-        alignedStreak = 0
-        unalignedStreak = 0
+        resetAcquire(unlock = true)
         _state.update {
             it.copy(
                 aiEnabled = enable,
-                lockEpoch = if (enable) it.lockEpoch + 1 else it.lockEpoch,
+                frameLocked = false,
+                aligned = false,
             )
         }
-        lastDecideAt = 0L
-        recompute()
+        if (!enable) {
+            val current = _state.value
+            _state.update {
+                it.copy(frame = Rect(0f, 0f, current.viewWidth, current.viewHeight))
+            }
+        }
     }
 
     fun selectLens(step: LensStep) {
@@ -131,9 +135,7 @@ class CameraViewModel : ViewModel() {
 
     fun toggleFacing() {
         userLensUntil = 0L
-        sceneStreak = 0
-        alignedStreak = 0
-        unalignedStreak = 0
+        resetAcquire(unlock = true)
         _state.update {
             val next = if (it.lensFacing == CameraSelector.LENS_FACING_BACK) {
                 CameraSelector.LENS_FACING_FRONT
@@ -145,11 +147,11 @@ class CameraViewModel : ViewModel() {
                 faces = emptyList(),
                 objects = emptyList(),
                 aligned = false,
+                frameLocked = false,
                 requestedZoom = if (next == CameraSelector.LENS_FACING_FRONT) 1f else null,
                 zoomToken = it.zoomToken + 1,
             )
         }
-        recompute()
     }
 
     fun cycleFlash() {
@@ -165,15 +167,15 @@ class CameraViewModel : ViewModel() {
 
     fun onPreviewSize(width: Float, height: Float) {
         if (width == _state.value.viewWidth && height == _state.value.viewHeight) return
+        val locked = _state.value.frameLocked
         _state.update { it.copy(viewWidth = width, viewHeight = height) }
-        recompute()
+        if (!locked) resetAcquire(unlock = false)
     }
 
     fun onHorizon(degrees: Float) {
-        val snapped = if (abs(degrees) < 0.8f) 0f else degrees
-        if (abs(snapped - _state.value.horizonDegrees) < 0.4f) return
+        val snapped = if (abs(degrees) < 1.2f) 0f else degrees
+        if (abs(snapped - _state.value.horizonDegrees) < 1.5f) return
         _state.update { it.copy(horizonDegrees = snapped) }
-        recompute()
     }
 
     fun onScene(
@@ -189,11 +191,14 @@ class CameraViewModel : ViewModel() {
                 objects = objects.map { obj -> obj.box },
             )
         }
-        recompute()
-        maybeDirect()
+        directFromScene()
     }
 
-    fun showFocus(point: Offset) {
+    fun showFocus(point: Offset, recompose: Boolean = false) {
+        if (recompose && _state.value.frameLocked) {
+            resetAcquire(unlock = true)
+            _state.update { it.copy(frameLocked = false, aligned = false) }
+        }
         _state.update { it.copy(focusPoint = point) }
     }
 
@@ -232,16 +237,15 @@ class CameraViewModel : ViewModel() {
         _state.update { it.copy(saveMessage = null) }
     }
 
-    private fun maybeDirect() {
-        val now = SystemClock.uptimeMillis()
-        if (now - lastDecideAt < 240L) return
-        lastDecideAt = now
+    private fun directFromScene() {
         val current = _state.value
         if (current.reviewBitmap != null || current.capturing) return
+        if (!current.aiEnabled) return
+        if (current.viewWidth < 8f || current.viewHeight < 8f) return
+        val now = SystemClock.uptimeMillis()
         val front = current.lensFacing == CameraSelector.LENS_FACING_FRONT
-        val steps = current.lensSteps
         val decision = SceneDirector.decide(
-            steps = steps,
+            steps = current.lensSteps,
             currentZoom = current.currentZoom,
             viewWidth = current.viewWidth,
             viewHeight = current.viewHeight,
@@ -251,127 +255,187 @@ class CameraViewModel : ViewModel() {
             horizonDegrees = current.horizonDegrees,
             front = front,
         )
-        val suggestedId = decision.lens?.id
-        if (suggestedId == stableLensId) {
-            stableFrames += 1
+        val recipe = SceneRecipe.from(decision.scene)
+        if (recipe == pendingRecipe) {
+            recipeStreak += 1
         } else {
-            stableLensId = suggestedId
-            stableFrames = 1
+            pendingRecipe = recipe
+            recipeStreak = 1
         }
-        if (decision.scene == pendingScene) {
-            sceneStreak += 1
-        } else {
-            pendingScene = decision.scene
-            sceneStreak = 1
+        if (current.frameLocked) {
+            maybeUnlock(decision, recipe, now)
+            maybeHint(decision, now, updateScene = false)
+            return
         }
-        val holdNeeded = if (current.scene == SceneKind.UNKNOWN) 2 else 3
-        val committedScene = if (sceneStreak >= holdNeeded) pendingScene else current.scene
-        val sceneChanged = committedScene != current.scene
-        val recipeChanged = SceneRecipe.from(committedScene) != SceneRecipe.from(current.scene)
-        val userLocked = now < userLensUntil
-        val canAutoLens = current.aiEnabled && !userLocked && !front && stableFrames >= 5
-        var zoomToken = current.zoomToken
-        var requestedZoom = current.requestedZoom
-        var lensSwitchEpoch = current.lensSwitchEpoch
-        val previousActive = current.activeLensId
-        if (canAutoLens && decision.lens != null) {
-            val target = decision.zoom
-            if (abs(target - lastAppliedZoom) >= 0.16f) {
-                lastAppliedZoom = target
-                requestedZoom = target
-                zoomToken += 1
-                if (decision.lens.id != previousActive) {
-                    lensSwitchEpoch += 1
-                }
+        if (recipeStreak >= RECIPE_HOLD) {
+            if (committedRecipe != recipe) {
+                committedRecipe = recipe
+                acquireStreak = 0
+                zoomForRecipe = null
             }
         }
-        var focusToken = current.focusToken
-        var requestedFocus = current.requestedFocus
-        val focus = decision.focus
-        if (current.aiEnabled && focus != null && now - lastFocusAt > 1300L) {
-            val moved = lastFocusPoint?.let { hypot(it.x - focus.x, it.y - focus.y) } ?: 999f
-            if (moved > 46f) {
-                lastFocusAt = now
-                lastFocusPoint = focus
-                requestedFocus = focus
-                focusToken += 1
-            }
-        }
-        val refreshHint = sceneChanged || now - lastHintAt > 720L
-        if (refreshHint) lastHintAt = now
-        var lockEpoch = current.lockEpoch
-        if (recipeChanged) lockEpoch += 1
-        _state.update {
-            it.copy(
-                scene = committedScene,
-                sceneLabel = if (sceneStreak >= holdNeeded) decision.sceneLabel else it.sceneLabel,
-                why = if (sceneStreak >= holdNeeded) decision.why else it.why,
-                hint = if (current.aiEnabled && refreshHint) decision.hint else it.hint,
-                suggestedLensId = suggestedId,
-                activeLensId = if (canAutoLens) suggestedId else it.activeLensId,
-                requestedZoom = requestedZoom,
-                zoomToken = zoomToken,
-                requestedFocus = requestedFocus,
-                focusToken = focusToken,
-                focusPoint = requestedFocus ?: it.focusPoint,
-                lockEpoch = lockEpoch,
-                lensSwitchEpoch = lensSwitchEpoch,
-            )
-        }
-        recompute()
+        val held = committedRecipe ?: return
+        acquire(decision, held, now, front)
     }
 
-    private fun recompute() {
+    private fun acquire(
+        decision: DirectorDecision,
+        recipe: SceneRecipe,
+        now: Long,
+        front: Boolean,
+    ) {
         val current = _state.value
-        val recipe = if (current.aiEnabled) SceneRecipe.from(current.scene) else null
-        val guide = runCatching {
-            FramingEngine.suggest(
-                viewWidth = current.viewWidth,
-                viewHeight = current.viewHeight,
-                faces = current.faces,
-                objects = current.objects,
-                recipe = recipe,
-                horizonDegrees = current.horizonDegrees,
-            )
-        }.getOrElse {
-            FramingEngine.suggest(
-                viewWidth = current.viewWidth,
-                viewHeight = current.viewHeight,
-                faces = emptyList(),
-                objects = emptyList(),
-                recipe = recipe,
-                horizonDegrees = 0f,
-            )
-        }
-        val nextFrame = if (
-            current.frame.width < 8f ||
-            guide.frame.aspectShifted(current.frame) ||
-            guide.frame.movedEnough(current.frame)
-        ) {
-            guide.frame
+        val letterbox = FramingEngine.letterbox(current.viewWidth, current.viewHeight, recipe)
+        if (SceneRecipe.from(decision.scene) == recipe) {
+            acquireStreak += 1
         } else {
-            current.frame
+            acquireStreak = 0
         }
-        if (guide.aligned) {
-            alignedStreak += 1
-            unalignedStreak = 0
+        val subject = decision.subject
+        val needsSubject = recipe != SceneRecipe.LANDSCAPE
+        val subjectOk = !needsSubject || subject != null
+        if (current.frame.width < 8f || current.frame.aspectShifted(letterbox)) {
+            _state.update {
+                it.copy(
+                    frame = letterbox,
+                    scene = decision.scene,
+                    sceneLabel = decision.sceneLabel,
+                    why = decision.why,
+                )
+            }
+        }
+        maybePickLensOnce(decision, recipe, front, current)
+        maybeHint(decision, now, updateScene = true)
+        if (subjectOk && acquireStreak >= ACQUIRE_HOLD && recipeStreak >= RECIPE_HOLD) {
+            val freeze = FramingEngine.compose(
+                current.viewWidth,
+                current.viewHeight,
+                recipe,
+                subject,
+            )
+            lockedSubjectCenter = subject?.center
+            subjectMissingSince = 0L
+            unlockSceneStreak = 0
+            unlockPanStreak = 0
+            _state.update {
+                it.copy(
+                    frame = freeze,
+                    frameLocked = true,
+                    aligned = true,
+                    scene = decision.scene,
+                    sceneLabel = decision.sceneLabel,
+                    why = decision.why,
+                    hint = decision.hint,
+                    lockEpoch = it.lockEpoch + 1,
+                )
+            }
+        }
+    }
+
+    private fun maybeUnlock(decision: DirectorDecision, liveRecipe: SceneRecipe, now: Long) {
+        val current = _state.value
+        val locked = committedRecipe ?: return
+        if (liveRecipe != locked) {
+            unlockSceneStreak += 1
         } else {
-            unalignedStreak += 1
-            alignedStreak = 0
+            unlockSceneStreak = 0
         }
-        val nextAligned = when {
-            current.aligned && unalignedStreak < 4 -> true
-            !current.aligned && alignedStreak >= 3 -> true
-            else -> guide.aligned && alignedStreak >= 3
+        if (unlockSceneStreak >= UNLOCK_SCENE_HOLD) {
+            unlockAndRestart(liveRecipe)
+            return
         }
-        val acquired = nextAligned && !current.aligned
+        val subject = decision.subject
+        val needsSubject = locked != SceneRecipe.LANDSCAPE
+        if (needsSubject && subject == null) {
+            if (subjectMissingSince == 0L) subjectMissingSince = now
+            if (now - subjectMissingSince >= SUBJECT_LOST_MS) {
+                unlockAndRestart(liveRecipe)
+            }
+            return
+        }
+        subjectMissingSince = 0L
+        val origin = lockedSubjectCenter
+        if (subject != null && origin != null && current.viewWidth > 1f) {
+            val moved = hypot(subject.center.x - origin.x, subject.center.y - origin.y)
+            if (moved > current.viewWidth * PAN_FRACTION) {
+                unlockPanStreak += 1
+            } else {
+                unlockPanStreak = 0
+            }
+            if (unlockPanStreak >= UNLOCK_PAN_HOLD) {
+                unlockAndRestart(liveRecipe)
+            }
+        }
+    }
+
+    private fun unlockAndRestart(recipe: SceneRecipe) {
+        resetAcquire(unlock = true)
+        committedRecipe = recipe
+        pendingRecipe = recipe
+        recipeStreak = RECIPE_HOLD
+        val current = _state.value
+        val letterbox = FramingEngine.letterbox(current.viewWidth, current.viewHeight, recipe)
         _state.update {
             it.copy(
-                frame = nextFrame,
-                aligned = nextAligned,
-                hint = if (it.aiEnabled && it.sceneLabel != null) it.hint else guide.hint,
-                lockEpoch = if (acquired) it.lockEpoch + 1 else it.lockEpoch,
+                frame = letterbox,
+                frameLocked = false,
+                aligned = false,
             )
+        }
+    }
+
+    private fun maybePickLensOnce(
+        decision: DirectorDecision,
+        recipe: SceneRecipe,
+        front: Boolean,
+        current: CameraUiState,
+    ) {
+        val now = SystemClock.uptimeMillis()
+        val userLocked = now < userLensUntil
+        if (front || userLocked || current.frameLocked) return
+        if (zoomForRecipe == recipe) return
+        val lens = decision.lens ?: return
+        zoomForRecipe = recipe
+        lastAppliedZoom = lens.zoom
+        val switched = lens.id != current.activeLensId
+        _state.update {
+            it.copy(
+                suggestedLensId = lens.id,
+                activeLensId = lens.id,
+                requestedZoom = lens.zoom,
+                zoomToken = it.zoomToken + 1,
+                lensSwitchEpoch = if (switched) it.lensSwitchEpoch + 1 else it.lensSwitchEpoch,
+            )
+        }
+    }
+
+    private fun maybeHint(decision: DirectorDecision, now: Long, updateScene: Boolean) {
+        val current = _state.value
+        if (!current.aiEnabled) return
+        val refresh = now - lastHintAt > 900L || current.sceneLabel == null
+        if (!refresh) return
+        lastHintAt = now
+        _state.update {
+            it.copy(
+                hint = decision.hint,
+                why = decision.why ?: it.why,
+                sceneLabel = if (updateScene) decision.sceneLabel else it.sceneLabel,
+                scene = if (updateScene) decision.scene else it.scene,
+            )
+        }
+    }
+
+    private fun resetAcquire(unlock: Boolean) {
+        acquireStreak = 0
+        unlockSceneStreak = 0
+        unlockPanStreak = 0
+        subjectMissingSince = 0L
+        lockedSubjectCenter = null
+        zoomForRecipe = null
+        if (unlock) {
+            recipeStreak = 0
+            pendingRecipe = null
+            committedRecipe = null
         }
     }
 
@@ -379,12 +443,15 @@ class CameraViewModel : ViewModel() {
         _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
         super.onCleared()
     }
-}
 
-private fun Rect.movedEnough(other: Rect): Boolean {
-    val pos = hypot(left - other.left, top - other.top)
-    val size = hypot(width - other.width, height - other.height)
-    return pos > 22f || size > 28f
+    private companion object {
+        const val RECIPE_HOLD = 8
+        const val ACQUIRE_HOLD = 12
+        const val UNLOCK_SCENE_HOLD = 8
+        const val UNLOCK_PAN_HOLD = 5
+        const val PAN_FRACTION = 0.22f
+        const val SUBJECT_LOST_MS = 1100L
+    }
 }
 
 private fun Rect.aspectShifted(other: Rect): Boolean {

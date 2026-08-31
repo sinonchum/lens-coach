@@ -35,6 +35,7 @@ fun CompositionOverlay(
     faces: List<Rect>,
     objects: List<Rect> = emptyList(),
     aligned: Boolean,
+    frameLocked: Boolean = false,
     lockEpoch: Long = 0L,
     focusPoint: Offset?,
     horizonDegrees: Float,
@@ -57,9 +58,9 @@ fun CompositionOverlay(
         label = "dimAlpha",
     )
 
-    LaunchedEffect(frame) {
+    LaunchedEffect(frame, frameLocked) {
         if (frame.width < 8f || frame.height < 8f) return@LaunchedEffect
-        if (!booted) {
+        if (!booted || frameLocked) {
             displayed.snapTo(frame)
             booted = true
         } else {
@@ -74,8 +75,8 @@ fun CompositionOverlay(
         }
     }
 
-    LaunchedEffect(lockEpoch) {
-        if (lockEpoch == 0L) return@LaunchedEffect
+    LaunchedEffect(lockEpoch, frameLocked) {
+        if (!frameLocked || lockEpoch == 0L) return@LaunchedEffect
         bracket.snapTo(0.12f)
         pulse.snapTo(1f)
         scan.snapTo(0f)
@@ -147,23 +148,25 @@ fun CompositionOverlay(
             1.2f,
         )
 
-        faces.forEach { face ->
-            drawRoundRect(
-                color = Color.White.copy(alpha = 0.18f),
-                topLeft = face.topLeft,
-                size = Size(face.width, face.height),
-                cornerRadius = CornerRadius(12f, 12f),
-                style = Stroke(width = 1.4f),
-            )
-        }
-        objects.forEach { box ->
-            drawRoundRect(
-                color = Viewfinder.Accent.copy(alpha = 0.16f),
-                topLeft = box.topLeft,
-                size = Size(box.width, box.height),
-                cornerRadius = CornerRadius(10f, 10f),
-                style = Stroke(width = 1.1f),
-            )
+        if (!frameLocked) {
+            faces.forEach { face ->
+                drawRoundRect(
+                    color = Color.White.copy(alpha = 0.18f),
+                    topLeft = face.topLeft,
+                    size = Size(face.width, face.height),
+                    cornerRadius = CornerRadius(12f, 12f),
+                    style = Stroke(width = 1.4f),
+                )
+            }
+            objects.forEach { box ->
+                drawRoundRect(
+                    color = Viewfinder.Accent.copy(alpha = 0.16f),
+                    topLeft = box.topLeft,
+                    size = Size(box.width, box.height),
+                    cornerRadius = CornerRadius(10f, 10f),
+                    style = Stroke(width = 1.1f),
+                )
+            }
         }
 
         if (hasCrop) {

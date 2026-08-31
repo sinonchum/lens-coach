@@ -303,6 +303,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             faces = state.faces,
             objects = state.objects,
             aligned = state.aligned,
+            frameLocked = state.frameLocked,
             lockEpoch = state.lockEpoch,
             focusPoint = state.focusPoint,
             horizonDegrees = state.horizonDegrees,
@@ -313,13 +314,13 @@ private fun LiveCamera(viewModel: CameraViewModel) {
                         onTap = { offset ->
                             if (state.reviewBitmap != null || state.capturing) return@detectTapGestures
                             focusAt(previewView, cameraController, offset)
-                            viewModel.showFocus(offset)
+                            viewModel.showFocus(offset, recompose = true)
                         },
                         onDoubleTap = { offset ->
                             if (state.reviewBitmap != null || state.capturing) return@detectTapGestures
                             focusAt(previewView, cameraController, offset)
                             viewModel.showFocus(offset)
-                            capture(context, cameraController, viewModel, state)
+                            capture(context, cameraController, viewModel, viewModel.state.value)
                         },
                     )
                 },
@@ -359,7 +360,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             onToggleFilters = { showFilters = !showFilters },
             onShutter = {
                 if (!state.capturing && state.reviewBitmap == null) {
-                    capture(context, cameraController, viewModel, state)
+                    capture(context, cameraController, viewModel, viewModel.state.value)
                 }
             },
             modifier = Modifier

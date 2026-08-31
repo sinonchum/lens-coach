@@ -32,13 +32,20 @@ object FramingEngine {
         }
         val subject = faces.maxByOrNull { it.width * it.height }
             ?: objects.maxByOrNull { it.width * it.height }
-        val frame = if (subject != null && recipe != SceneRecipe.LANDSCAPE) {
-            frameAroundSubject(subject, viewWidth, viewHeight, recipe)
-        } else {
-            defaultFrame(viewWidth, viewHeight, recipe)
-        }
+        val frame = letterbox(viewWidth, viewHeight, recipe)
         val (hint, aligned) = hintFor(subject, frame, recipe, horizonDegrees)
         return CoachGuide(frame, subject, hint, aligned)
+    }
+
+    fun letterbox(viewW: Float, viewH: Float, recipe: SceneRecipe): Rect {
+        return defaultFrame(viewW, viewH, recipe)
+    }
+
+    fun compose(viewW: Float, viewH: Float, recipe: SceneRecipe, subject: Rect?): Rect {
+        if (subject == null || recipe == SceneRecipe.LANDSCAPE) {
+            return defaultFrame(viewW, viewH, recipe)
+        }
+        return frameAroundSubject(subject, viewW, viewH, recipe)
     }
 
     private fun defaultFrame(viewW: Float, viewH: Float, recipe: SceneRecipe): Rect {
