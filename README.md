@@ -1,24 +1,25 @@
 # 镜导 · Lens Coach
 
-Android 相机：打开预览后叠加建议取景框，单击对焦，双击对焦并拍照。内置日系 / 电影 / 纪实三套风格，拍后套色并保存到相册 `Pictures/LensCoach`。
+Android camera with a live framing overlay, auto lens from the phone’s zoom range, tap-to-focus, and double-tap to shoot. AI picks a scene recipe (portrait / landscape / street), letterboxes the preview to that crop, then crops the capture to match. Color looks live in a secondary **Filters** sheet. Saves to `Pictures/LensCoach`.
 
-## 运行
+## Run
 
-1. 用 Android Studio 打开本目录，或命令行：
+1. Open this folder in Android Studio, or:
 
 ```bat
-gradlew.bat installDebug
+gradlew.bat assembleDebug
 ```
 
-2. 需要一台 Android 8.0+ 真机（开 USB 调试）。首次会请求相机权限。
+2. Android 8.0+ device. Grant camera permission on first launch.
 
-小米 / HyperOS 若提示 `INSTALL_FAILED_USER_RESTRICTED`：打开 **设置 → 开发者选项**，打开 **USB 调试（安全设置）** 和 **通过 USB 安装**，安装弹窗出现时点允许，再执行一次 `gradlew.bat installDebug`。
+Sideload the debug APK from GitHub Releases if USB install is flaky on HyperOS.
 
-APK 路径：`app/build/outputs/apk/debug/app-debug.apk`。
+APK path: `app/build/outputs/apk/debug/app-debug.apk`.
 
-## 手势
+## Gestures
 
-- **单击**：对焦 + 测光
-- **双击**：对焦并拍照
-- 底部快门：备用拍照
-- 风格芯片：切换取景比例和成片调色
+- **Tap**: focus + metering
+- **Double-tap**: focus and shoot
+- **Shutter**: backup capture
+- **Filters**: color looks only (Neutral, Soft, Cinema, Documentary, High-contrast)
+- **AI framing**: auto lens, AF, and crop overlay

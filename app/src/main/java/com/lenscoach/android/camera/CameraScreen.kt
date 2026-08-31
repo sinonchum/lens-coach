@@ -31,6 +31,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,6 +44,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -50,6 +52,7 @@ import androidx.compose.material.icons.outlined.Cameraswitch
 import androidx.compose.material.icons.outlined.FlashAuto
 import androidx.compose.material.icons.outlined.FlashOff
 import androidx.compose.material.icons.outlined.FlashOn
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -65,18 +68,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
-import com.lenscoach.android.R
-import com.lenscoach.android.capture.CaptureStore
-import com.lenscoach.android.overlay.CompositionOverlay
-import com.lenscoach.android.style.StylePack
-import com.lenscoach.android.ui.asString
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -90,6 +88,13 @@ import com.google.mlkit.vision.label.ImageLabeling
 import com.google.mlkit.vision.label.defaults.ImageLabelerOptions
 import com.google.mlkit.vision.objects.ObjectDetection
 import com.google.mlkit.vision.objects.defaults.ObjectDetectorOptions
+import com.lenscoach.android.R
+import com.lenscoach.android.capture.CaptureCrop
+import com.lenscoach.android.capture.CaptureStore
+import com.lenscoach.android.overlay.CompositionOverlay
+import com.lenscoach.android.style.FilterLook
+import com.lenscoach.android.ui.Viewfinder
+import com.lenscoach.android.ui.asString
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.atan2
@@ -119,10 +124,10 @@ fun CameraScreen(viewModel: CameraViewModel) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black),
+                .background(Viewfinder.Chrome),
             contentAlignment = Alignment.Center,
         ) {
-            Text(stringResource(R.string.permission_needed), color = Color(0xFFF4E6C3))
+            Text(stringResource(R.string.permission_needed), color = Viewfinder.Text)
         }
         return
     }
@@ -134,6 +139,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val state by viewModel.state.collectAsStateWithLifecycle()
+    var showFilters by remember { mutableStateOf(false) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
     val faceDetector = remember {
         FaceDetection.getClient(
@@ -273,7 +279,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Viewfinder.Chrome),
     ) {
         AndroidView(
             factory = { previewView },
@@ -330,14 +336,16 @@ private fun LiveCamera(viewModel: CameraViewModel) {
                 .padding(top = 52.dp),
         )
         BottomBar(
-            style = state.style,
+            filter = state.filter,
+            showFilters = showFilters,
             capturing = state.capturing,
             showLenses = state.lensFacing == CameraSelector.LENS_FACING_BACK && state.lensSteps.isNotEmpty(),
             steps = state.lensSteps,
             activeLensId = state.activeLensId,
             suggestedLensId = state.suggestedLensId,
             onLens = viewModel::selectLens,
-            onStyle = viewModel::setStyle,
+            onFilter = viewModel::setFilter,
+            onToggleFilters = { showFilters = !showFilters },
             onShutter = {
                 if (!state.capturing && state.reviewBitmap == null) {
                     capture(context, cameraController, viewModel, state)
@@ -350,10 +358,10 @@ private fun LiveCamera(viewModel: CameraViewModel) {
         state.reviewBitmap?.let { bitmap ->
             ReviewOverlay(
                 bitmap = bitmap,
-                style = state.style,
+                filter = state.filter,
                 onRetake = viewModel::discardReview,
                 onSave = {
-                    val uri = CaptureStore.save(context, bitmap, state.style.name)
+                    val uri = CaptureStore.save(context, bitmap, state.filter.name)
                     viewModel.onSaved(uri != null)
                 },
             )
@@ -383,21 +391,25 @@ private fun TopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onFlash) {
-            Icon(flashIcon, contentDescription = stringResource(R.string.flash), tint = Color(0xFFF4E6C3))
+            Icon(flashIcon, contentDescription = stringResource(R.string.flash), tint = Viewfinder.Text)
         }
         Text(
             text = stringResource(if (aiEnabled) R.string.ai_on else R.string.ai_off),
-            color = if (aiEnabled) Color(0xFF111318) else Color(0xFFF4E6C3),
+            color = if (aiEnabled) Viewfinder.OnAccent else Viewfinder.Text,
             fontSize = 13.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
                 .clip(RoundedCornerShape(16.dp))
-                .background(if (aiEnabled) Color(0xFFF4E6C3) else Color(0x66000000))
+                .background(if (aiEnabled) Viewfinder.Accent else Viewfinder.Dim)
                 .clickable(onClick = onAi)
                 .padding(horizontal = 12.dp, vertical = 6.dp),
         )
         IconButton(onClick = onSwitch) {
-            Icon(Icons.Outlined.Cameraswitch, contentDescription = stringResource(R.string.switch_camera), tint = Color(0xFFF4E6C3))
+            Icon(
+                Icons.Outlined.Cameraswitch,
+                contentDescription = stringResource(R.string.switch_camera),
+                tint = Viewfinder.Text,
+            )
         }
     }
 }
@@ -415,18 +427,18 @@ private fun CoachBanner(
         modifier = modifier
             .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(if (aligned) Color(0xFFC8F59B) else Color(0xCC000000))
+            .background(if (aligned) Viewfinder.Accent.copy(alpha = 0.92f) else Viewfinder.Dim)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        val titleColor = if (aligned) Color(0xFF111318) else Color(0xFFF4E6C3)
-        val bodyColor = if (aligned) Color(0xFF111318) else Color(0xFFF4F1EA)
+        val titleColor = if (aligned) Viewfinder.OnAccent else Viewfinder.Text
+        val bodyColor = if (aligned) Viewfinder.OnAccent else Viewfinder.Muted
         if (scene.isNotBlank()) {
             Text(scene, color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
         }
         Text(hint, color = bodyColor, fontSize = 13.sp)
         if (why.isNotBlank()) {
-            Text(why, color = bodyColor.copy(alpha = 0.8f), fontSize = 11.sp)
+            Text(why, color = bodyColor.copy(alpha = 0.85f), fontSize = 11.sp)
         }
         Text(summary, color = bodyColor.copy(alpha = 0.55f), fontSize = 10.sp)
     }
@@ -444,14 +456,16 @@ private fun inventorySummary(inventory: CameraInventory?): String {
 
 @Composable
 private fun BottomBar(
-    style: StylePack,
+    filter: FilterLook,
+    showFilters: Boolean,
     capturing: Boolean,
     showLenses: Boolean,
     steps: List<LensStep>,
     activeLensId: String?,
     suggestedLensId: String?,
     onLens: (LensStep) -> Unit,
-    onStyle: (StylePack) -> Unit,
+    onFilter: (FilterLook) -> Unit,
+    onToggleFilters: () -> Unit,
     onShutter: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -461,8 +475,15 @@ private fun BottomBar(
             .padding(bottom = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
+        if (showFilters) {
+            FilterSheet(filter = filter, onFilter = onFilter)
+            Spacer(Modifier.height(12.dp))
+        }
         if (showLenses) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 steps.forEach { step ->
                     val active = step.id == activeLensId
                     val suggested = step.id == suggestedLensId
@@ -472,15 +493,15 @@ private fun BottomBar(
                         } else {
                             step.label
                         },
-                        color = if (active) Color(0xFF1A1408) else Color(0xFFF4E6C3),
+                        color = if (active) Viewfinder.OnAccent else Viewfinder.Text,
                         fontSize = 13.sp,
                         fontWeight = if (suggested) FontWeight.SemiBold else FontWeight.Normal,
                         modifier = Modifier
                             .clip(RoundedCornerShape(16.dp))
-                            .background(if (active) Color(0xFFF4E6C3) else Color(0x66000000))
+                            .background(if (active) Viewfinder.Accent else Viewfinder.Dim)
                             .border(
                                 width = if (suggested && !active) 1.dp else 0.dp,
-                                color = Color(0xFFF4E6C3),
+                                color = Viewfinder.Accent,
                                 shape = RoundedCornerShape(16.dp),
                             )
                             .clickable { onLens(step) }
@@ -488,64 +509,128 @@ private fun BottomBar(
                     )
                 }
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(14.dp))
         }
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            StylePack.entries.forEach { pack ->
-                val selected = pack == style
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 28.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            FilterButton(open = showFilters, onClick = onToggleFilters)
+            Box(
+                modifier = Modifier
+                    .size(74.dp)
+                    .clip(CircleShape)
+                    .border(3.dp, Viewfinder.Text, CircleShape)
+                    .clickable(enabled = !capturing, onClick = onShutter),
+                contentAlignment = Alignment.Center,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .clip(CircleShape)
+                        .background(if (capturing) Viewfinder.Accent else Viewfinder.Text),
+                )
+            }
+            Spacer(Modifier.size(72.dp))
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            stringResource(R.string.shutter_hint),
+            color = Viewfinder.Muted,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+@Composable
+private fun FilterButton(open: Boolean, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (open) Viewfinder.Accent else Viewfinder.Dim)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Outlined.Tune,
+            contentDescription = stringResource(R.string.filters),
+            tint = if (open) Viewfinder.OnAccent else Viewfinder.Text,
+            modifier = Modifier.size(22.dp),
+        )
+        Text(
+            stringResource(R.string.filters),
+            color = if (open) Viewfinder.OnAccent else Viewfinder.Text,
+            fontSize = 11.sp,
+        )
+    }
+}
+
+@Composable
+private fun FilterSheet(
+    filter: FilterLook,
+    onFilter: (FilterLook) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Viewfinder.Surface.copy(alpha = 0.94f))
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Text(
+            stringResource(R.string.filters),
+            color = Viewfinder.Muted,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium,
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            FilterLook.entries.forEach { look ->
+                val selected = look == filter
                 Text(
-                    text = stringResource(pack.labelRes),
-                    color = if (selected) Color(0xFF1A1408) else Color(0xFFF4E6C3),
+                    text = stringResource(look.labelRes),
+                    color = if (selected) Viewfinder.OnAccent else Viewfinder.Text,
                     fontSize = 13.sp,
                     modifier = Modifier
                         .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) Color(0xFFF4E6C3) else Color(0x66000000))
-                        .clickable { onStyle(pack) }
+                        .background(if (selected) Viewfinder.Accent else Viewfinder.Dim)
+                        .clickable { onFilter(look) }
                         .padding(horizontal = 14.dp, vertical = 6.dp),
                 )
             }
         }
-        Spacer(Modifier.height(16.dp))
-        Box(
-            modifier = Modifier
-                .size(74.dp)
-                .clip(CircleShape)
-                .border(3.dp, Color.White, CircleShape)
-                .clickable(enabled = !capturing, onClick = onShutter),
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(58.dp)
-                    .clip(CircleShape)
-                    .background(if (capturing) Color(0xFFF4E6C3) else Color.White),
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(stringResource(R.string.shutter_hint), color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp)
     }
 }
 
 @Composable
 private fun ReviewOverlay(
     bitmap: Bitmap,
-    style: StylePack,
+    filter: FilterLook,
     onRetake: () -> Unit,
     onSave: () -> Unit,
 ) {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black),
+            .background(Viewfinder.Chrome),
     ) {
         Image(
             bitmap = bitmap.asImageBitmap(),
             contentDescription = stringResource(R.string.review_photo),
+            contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
         Text(
-            text = stringResource(style.labelRes),
-            color = Color(0xFFF4E6C3),
+            text = stringResource(filter.labelRes),
+            color = Viewfinder.Text,
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
@@ -561,19 +646,19 @@ private fun ReviewOverlay(
         ) {
             Text(
                 stringResource(R.string.retake),
-                color = Color.White,
+                color = Viewfinder.Text,
                 modifier = Modifier
                     .clip(RoundedCornerShape(22.dp))
-                    .background(Color(0x66FFFFFF))
+                    .background(Viewfinder.Dim)
                     .clickable(onClick = onRetake)
                     .padding(horizontal = 28.dp, vertical = 12.dp),
             )
             Text(
                 stringResource(R.string.save),
-                color = Color(0xFF1A1408),
+                color = Viewfinder.OnAccent,
                 modifier = Modifier
                     .clip(RoundedCornerShape(22.dp))
-                    .background(Color(0xFFF4E6C3))
+                    .background(Viewfinder.Accent)
                     .clickable(onClick = onSave)
                     .padding(horizontal = 28.dp, vertical = 12.dp),
             )
@@ -616,9 +701,19 @@ private fun capture(
         object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
-                    val bitmap = image.toRotatedBitmap(state.lensFacing == CameraSelector.LENS_FACING_FRONT)
-                    val graded = state.style.grade(bitmap)
-                    if (graded !== bitmap) bitmap.recycle()
+                    val rotated = image.toRotatedBitmap(
+                        state.lensFacing == CameraSelector.LENS_FACING_FRONT,
+                    )
+                    val cropped = CaptureCrop.cropToGuide(
+                        bitmap = rotated,
+                        guide = state.frame,
+                        viewWidth = state.viewWidth,
+                        viewHeight = state.viewHeight,
+                        mirrored = false,
+                    )
+                    if (cropped !== rotated) rotated.recycle()
+                    val graded = state.filter.grade(cropped)
+                    if (graded !== cropped) cropped.recycle()
                     viewModel.showReview(graded)
                 } catch (error: Exception) {
                     viewModel.setCapturing(false)

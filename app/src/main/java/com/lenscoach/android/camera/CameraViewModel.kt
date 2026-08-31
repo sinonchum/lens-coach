@@ -9,7 +9,8 @@ import androidx.compose.ui.geometry.Rect
 import androidx.lifecycle.ViewModel
 import com.lenscoach.android.R
 import com.lenscoach.android.overlay.FramingEngine
-import com.lenscoach.android.style.StylePack
+import com.lenscoach.android.overlay.SceneRecipe
+import com.lenscoach.android.style.FilterLook
 import com.lenscoach.android.ui.UiText
 import kotlin.math.abs
 import kotlin.math.hypot
@@ -20,7 +21,8 @@ import kotlinx.coroutines.flow.update
 data class CameraUiState(
     val lensFacing: Int = CameraSelector.LENS_FACING_BACK,
     val flashMode: Int = ImageCapture.FLASH_MODE_OFF,
-    val style: StylePack = StylePack.NIKKEI,
+    val filter: FilterLook = FilterLook.NEUTRAL,
+    val scene: SceneKind = SceneKind.UNKNOWN,
     val faces: List<Rect> = emptyList(),
     val objects: List<Rect> = emptyList(),
     val frame: Rect = Rect.Zero,
@@ -88,10 +90,8 @@ class CameraViewModel : ViewModel() {
         }
     }
 
-    fun setStyle(style: StylePack) {
-        _state.update { it.copy(style = style) }
-        lastDecideAt = 0L
-        recompute()
+    fun setFilter(filter: FilterLook) {
+        _state.update { it.copy(filter = filter) }
     }
 
     fun toggleAi() {
@@ -223,7 +223,6 @@ class CameraViewModel : ViewModel() {
         val front = current.lensFacing == CameraSelector.LENS_FACING_FRONT
         val steps = current.lensSteps
         val decision = SceneDirector.decide(
-            style = current.style,
             steps = steps,
             currentZoom = current.currentZoom,
             viewWidth = current.viewWidth,
@@ -267,6 +266,7 @@ class CameraViewModel : ViewModel() {
         }
         _state.update {
             it.copy(
+                scene = decision.scene,
                 sceneLabel = decision.sceneLabel,
                 why = decision.why,
                 hint = if (current.aiEnabled) decision.hint else it.hint,
@@ -279,17 +279,19 @@ class CameraViewModel : ViewModel() {
                 focusPoint = requestedFocus ?: it.focusPoint,
             )
         }
+        recompute()
     }
 
     private fun recompute() {
         val current = _state.value
+        val recipe = if (current.aiEnabled) SceneRecipe.from(current.scene) else null
         val guide = runCatching {
             FramingEngine.suggest(
                 viewWidth = current.viewWidth,
                 viewHeight = current.viewHeight,
                 faces = current.faces,
                 objects = current.objects,
-                style = current.style,
+                recipe = recipe,
                 horizonDegrees = current.horizonDegrees,
             )
         }.getOrElse {
@@ -298,7 +300,7 @@ class CameraViewModel : ViewModel() {
                 viewHeight = current.viewHeight,
                 faces = emptyList(),
                 objects = emptyList(),
-                style = current.style,
+                recipe = recipe,
                 horizonDegrees = 0f,
             )
         }

@@ -8,36 +8,17 @@ import android.graphics.Paint
 import androidx.annotation.StringRes
 import com.lenscoach.android.R
 
-enum class StylePack(
+enum class FilterLook(
     @StringRes val labelRes: Int,
-    val frameAspect: Float,
-    val subjectBias: Float,
-    val faceHeightRatio: Float,
-    val headroom: Float,
 ) {
-    NIKKEI(
-        labelRes = R.string.style_nikkei,
-        frameAspect = 4f / 5f,
-        subjectBias = 0.38f,
-        faceHeightRatio = 0.36f,
-        headroom = 0.22f,
-    ),
-    CINEMA(
-        labelRes = R.string.style_cinema,
-        frameAspect = 2.39f / 1f,
-        subjectBias = 0.50f,
-        faceHeightRatio = 0.42f,
-        headroom = 0.18f,
-    ),
-    DOCUMENTARY(
-        labelRes = R.string.style_documentary,
-        frameAspect = 3f / 2f,
-        subjectBias = 0.50f,
-        faceHeightRatio = 0.40f,
-        headroom = 0.16f,
-    );
+    NEUTRAL(R.string.filter_neutral),
+    SOFT(R.string.filter_soft),
+    CINEMA(R.string.filter_cinema),
+    DOCUMENTARY(R.string.filter_documentary),
+    HIGH_CONTRAST(R.string.filter_high_contrast);
 
     fun grade(source: Bitmap): Bitmap {
+        if (this == NEUTRAL) return source
         val out = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -52,11 +33,17 @@ enum class StylePack(
         val saturation: Float
         val warm: Float
         when (this) {
-            NIKKEI -> {
-                contrast = 0.86f
-                brightness = 18f
-                saturation = 0.72f
-                warm = 1.06f
+            NEUTRAL -> {
+                contrast = 1f
+                brightness = 0f
+                saturation = 1f
+                warm = 1f
+            }
+            SOFT -> {
+                contrast = 0.88f
+                brightness = 12f
+                saturation = 0.82f
+                warm = 1.02f
             }
             CINEMA -> {
                 contrast = 1.18f
@@ -68,6 +55,12 @@ enum class StylePack(
                 contrast = 1.06f
                 brightness = 2f
                 saturation = 0.96f
+                warm = 1.0f
+            }
+            HIGH_CONTRAST -> {
+                contrast = 1.28f
+                brightness = -6f
+                saturation = 0.92f
                 warm = 1.0f
             }
         }
@@ -82,15 +75,16 @@ enum class StylePack(
         val sat = ColorMatrix().apply { setSaturation(saturation) }
         sat.postConcat(scale)
         if (this == CINEMA) {
-            val tealOrange = ColorMatrix(
-                floatArrayOf(
-                    1.05f, 0f, 0.04f, 0f, 6f,
-                    0f, 0.98f, 0.02f, 0f, 0f,
-                    0.02f, 0.04f, 1.08f, 0f, 8f,
-                    0f, 0f, 0f, 1f, 0f,
+            sat.postConcat(
+                ColorMatrix(
+                    floatArrayOf(
+                        1.05f, 0f, 0.04f, 0f, 6f,
+                        0f, 0.98f, 0.02f, 0f, 0f,
+                        0.02f, 0.04f, 1.08f, 0f, 8f,
+                        0f, 0f, 0f, 1f, 0f,
+                    ),
                 ),
             )
-            sat.postConcat(tealOrange)
         }
         return sat
     }

@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import com.lenscoach.android.ui.Viewfinder
 import kotlin.math.min
 
 @Composable
@@ -25,11 +26,55 @@ fun CompositionOverlay(
     modifier: Modifier = Modifier,
 ) {
     Canvas(modifier = modifier.fillMaxSize()) {
-        val thirds = Color.White.copy(alpha = 0.18f)
-        drawLine(thirds, Offset(size.width / 3f, 0f), Offset(size.width / 3f, size.height), 1.2f)
-        drawLine(thirds, Offset(size.width * 2f / 3f, 0f), Offset(size.width * 2f / 3f, size.height), 1.2f)
-        drawLine(thirds, Offset(0f, size.height / 3f), Offset(size.width, size.height / 3f), 1.2f)
-        drawLine(thirds, Offset(0f, size.height * 2f / 3f), Offset(size.width, size.height * 2f / 3f), 1.2f)
+        val hasCrop = frame.width > 8f &&
+            frame.height > 8f &&
+            (frame.width < size.width - 8f || frame.height < size.height - 8f)
+        if (hasCrop) {
+            val dim = Color.Black.copy(alpha = 0.58f)
+            drawRect(dim, topLeft = Offset.Zero, size = Size(size.width, frame.top.coerceAtLeast(0f)))
+            drawRect(
+                dim,
+                topLeft = Offset(0f, frame.bottom),
+                size = Size(size.width, (size.height - frame.bottom).coerceAtLeast(0f)),
+            )
+            drawRect(
+                dim,
+                topLeft = Offset(0f, frame.top),
+                size = Size(frame.left.coerceAtLeast(0f), frame.height),
+            )
+            drawRect(
+                dim,
+                topLeft = Offset(frame.right, frame.top),
+                size = Size((size.width - frame.right).coerceAtLeast(0f), frame.height),
+            )
+        }
+
+        val thirds = Color.White.copy(alpha = 0.16f)
+        val thirdsRect = if (hasCrop) frame else Rect(0f, 0f, size.width, size.height)
+        drawLine(
+            thirds,
+            Offset(thirdsRect.left + thirdsRect.width / 3f, thirdsRect.top),
+            Offset(thirdsRect.left + thirdsRect.width / 3f, thirdsRect.bottom),
+            1.2f,
+        )
+        drawLine(
+            thirds,
+            Offset(thirdsRect.left + thirdsRect.width * 2f / 3f, thirdsRect.top),
+            Offset(thirdsRect.left + thirdsRect.width * 2f / 3f, thirdsRect.bottom),
+            1.2f,
+        )
+        drawLine(
+            thirds,
+            Offset(thirdsRect.left, thirdsRect.top + thirdsRect.height / 3f),
+            Offset(thirdsRect.right, thirdsRect.top + thirdsRect.height / 3f),
+            1.2f,
+        )
+        drawLine(
+            thirds,
+            Offset(thirdsRect.left, thirdsRect.top + thirdsRect.height * 2f / 3f),
+            Offset(thirdsRect.right, thirdsRect.top + thirdsRect.height * 2f / 3f),
+            1.2f,
+        )
 
         faces.forEach { face ->
             drawRoundRect(
@@ -42,7 +87,7 @@ fun CompositionOverlay(
         }
         objects.forEach { box ->
             drawRoundRect(
-                color = Color(0xFFF4E6C3).copy(alpha = 0.28f),
+                color = Viewfinder.Accent.copy(alpha = 0.28f),
                 topLeft = box.topLeft,
                 size = Size(box.width, box.height),
                 cornerRadius = CornerRadius(10f, 10f),
@@ -50,13 +95,13 @@ fun CompositionOverlay(
             )
         }
 
-        if (frame.width > 8f && frame.height > 8f) {
-            val color = if (aligned) Color(0xFFC8F59B) else Color(0xFFF4E6C3)
+        if (hasCrop) {
+            val color = if (aligned) Viewfinder.Accent else Color.White
             val stroke = if (aligned) 4.5f else 3f
             val arm = min(frame.width, frame.height) * 0.16f
             drawCornerBrackets(frame, color, stroke, arm)
             drawRect(
-                color = color.copy(alpha = 0.12f),
+                color = color.copy(alpha = 0.18f),
                 topLeft = frame.topLeft,
                 size = Size(frame.width, frame.height),
                 style = Stroke(width = 1.2f),
@@ -67,7 +112,7 @@ fun CompositionOverlay(
             rotate(horizonDegrees, pivot = center) {
                 val y = size.height * 0.5f
                 drawLine(
-                    color = Color(0xFFFF8A7A),
+                    color = Viewfinder.Hazard,
                     start = Offset(size.width * 0.18f, y),
                     end = Offset(size.width * 0.82f, y),
                     strokeWidth = 2f,
@@ -78,13 +123,13 @@ fun CompositionOverlay(
 
         focusPoint?.let { point ->
             drawCircle(
-                color = Color(0xFFF4E6C3),
+                color = Viewfinder.Accent,
                 radius = 42f,
                 center = point,
                 style = Stroke(width = 2.4f),
             )
             drawCircle(
-                color = Color(0xFFF4E6C3).copy(alpha = 0.5f),
+                color = Viewfinder.Accent.copy(alpha = 0.5f),
                 radius = 6f,
                 center = point,
             )
