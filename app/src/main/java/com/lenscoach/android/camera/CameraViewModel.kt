@@ -47,6 +47,8 @@ data class CameraUiState(
     val requestedFocus: Offset? = null,
     val zoomToken: Long = 0L,
     val focusToken: Long = 0L,
+    val lockEpoch: Long = 0L,
+    val lensSwitchEpoch: Long = 0L,
 )
 
 class CameraViewModel : ViewModel() {
@@ -62,6 +64,11 @@ class CameraViewModel : ViewModel() {
     private var userLensUntil = 0L
     private var latestLabels: List<SceneLabel> = emptyList()
     private var latestObjects: List<SceneObject> = emptyList()
+    private var pendingScene: SceneKind = SceneKind.UNKNOWN
+    private var sceneStreak = 0
+    private var alignedStreak = 0
+    private var unalignedStreak = 0
+    private var lastHintAt = 0L
 
     fun loadInventory(inventory: CameraInventory) {
         _state.update {
@@ -97,7 +104,15 @@ class CameraViewModel : ViewModel() {
     fun toggleAi() {
         val enable = !_state.value.aiEnabled
         if (enable) userLensUntil = 0L
-        _state.update { it.copy(aiEnabled = enable) }
+        sceneStreak = 0
+        alignedStreak = 0
+        unalignedStreak = 0
+        _state.update {
+            it.copy(
+                aiEnabled = enable,
+                lockEpoch = if (enable) it.lockEpoch + 1 else it.lockEpoch,
+            )
+        }
         lastDecideAt = 0L
         recompute()
     }
@@ -116,6 +131,9 @@ class CameraViewModel : ViewModel() {
 
     fun toggleFacing() {
         userLensUntil = 0L
+        sceneStreak = 0
+        alignedStreak = 0
+        unalignedStreak = 0
         _state.update {
             val next = if (it.lensFacing == CameraSelector.LENS_FACING_BACK) {
                 CameraSelector.LENS_FACING_FRONT
@@ -240,16 +258,31 @@ class CameraViewModel : ViewModel() {
             stableLensId = suggestedId
             stableFrames = 1
         }
+        if (decision.scene == pendingScene) {
+            sceneStreak += 1
+        } else {
+            pendingScene = decision.scene
+            sceneStreak = 1
+        }
+        val holdNeeded = if (current.scene == SceneKind.UNKNOWN) 2 else 3
+        val committedScene = if (sceneStreak >= holdNeeded) pendingScene else current.scene
+        val sceneChanged = committedScene != current.scene
+        val recipeChanged = SceneRecipe.from(committedScene) != SceneRecipe.from(current.scene)
         val userLocked = now < userLensUntil
         val canAutoLens = current.aiEnabled && !userLocked && !front && stableFrames >= 5
         var zoomToken = current.zoomToken
         var requestedZoom = current.requestedZoom
+        var lensSwitchEpoch = current.lensSwitchEpoch
+        val previousActive = current.activeLensId
         if (canAutoLens && decision.lens != null) {
             val target = decision.zoom
             if (abs(target - lastAppliedZoom) >= 0.16f) {
                 lastAppliedZoom = target
                 requestedZoom = target
                 zoomToken += 1
+                if (decision.lens.id != previousActive) {
+                    lensSwitchEpoch += 1
+                }
             }
         }
         var focusToken = current.focusToken
@@ -264,12 +297,16 @@ class CameraViewModel : ViewModel() {
                 focusToken += 1
             }
         }
+        val refreshHint = sceneChanged || now - lastHintAt > 720L
+        if (refreshHint) lastHintAt = now
+        var lockEpoch = current.lockEpoch
+        if (recipeChanged) lockEpoch += 1
         _state.update {
             it.copy(
-                scene = decision.scene,
-                sceneLabel = decision.sceneLabel,
-                why = decision.why,
-                hint = if (current.aiEnabled) decision.hint else it.hint,
+                scene = committedScene,
+                sceneLabel = if (sceneStreak >= holdNeeded) decision.sceneLabel else it.sceneLabel,
+                why = if (sceneStreak >= holdNeeded) decision.why else it.why,
+                hint = if (current.aiEnabled && refreshHint) decision.hint else it.hint,
                 suggestedLensId = suggestedId,
                 activeLensId = if (canAutoLens) suggestedId else it.activeLensId,
                 requestedZoom = requestedZoom,
@@ -277,6 +314,8 @@ class CameraViewModel : ViewModel() {
                 requestedFocus = requestedFocus,
                 focusToken = focusToken,
                 focusPoint = requestedFocus ?: it.focusPoint,
+                lockEpoch = lockEpoch,
+                lensSwitchEpoch = lensSwitchEpoch,
             )
         }
         recompute()
@@ -304,11 +343,34 @@ class CameraViewModel : ViewModel() {
                 horizonDegrees = 0f,
             )
         }
+        val nextFrame = if (
+            current.frame.width < 8f ||
+            guide.frame.aspectShifted(current.frame) ||
+            guide.frame.movedEnough(current.frame)
+        ) {
+            guide.frame
+        } else {
+            current.frame
+        }
+        if (guide.aligned) {
+            alignedStreak += 1
+            unalignedStreak = 0
+        } else {
+            unalignedStreak += 1
+            alignedStreak = 0
+        }
+        val nextAligned = when {
+            current.aligned && unalignedStreak < 4 -> true
+            !current.aligned && alignedStreak >= 3 -> true
+            else -> guide.aligned && alignedStreak >= 3
+        }
+        val acquired = nextAligned && !current.aligned
         _state.update {
             it.copy(
-                frame = guide.frame,
-                aligned = guide.aligned,
+                frame = nextFrame,
+                aligned = nextAligned,
                 hint = if (it.aiEnabled && it.sceneLabel != null) it.hint else guide.hint,
+                lockEpoch = if (acquired) it.lockEpoch + 1 else it.lockEpoch,
             )
         }
     }
@@ -317,4 +379,16 @@ class CameraViewModel : ViewModel() {
         _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
         super.onCleared()
     }
+}
+
+private fun Rect.movedEnough(other: Rect): Boolean {
+    val pos = hypot(left - other.left, top - other.top)
+    val size = hypot(width - other.width, height - other.height)
+    return pos > 22f || size > 28f
+}
+
+private fun Rect.aspectShifted(other: Rect): Boolean {
+    val a = width / height.coerceAtLeast(1f)
+    val b = other.width / other.height.coerceAtLeast(1f)
+    return abs(a - b) > 0.08f
 }

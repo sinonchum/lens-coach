@@ -26,6 +26,14 @@ import androidx.camera.mlkit.vision.MlKitAnalyzer
 import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -66,6 +74,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.asImageBitmap
@@ -294,6 +303,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             faces = state.faces,
             objects = state.objects,
             aligned = state.aligned,
+            lockEpoch = state.lockEpoch,
             focusPoint = state.focusPoint,
             horizonDegrees = state.horizonDegrees,
             modifier = Modifier
@@ -343,6 +353,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             steps = state.lensSteps,
             activeLensId = state.activeLensId,
             suggestedLensId = state.suggestedLensId,
+            lensSwitchEpoch = state.lensSwitchEpoch,
             onLens = viewModel::selectLens,
             onFilter = viewModel::setFilter,
             onToggleFilters = { showFilters = !showFilters },
@@ -423,20 +434,49 @@ private fun CoachBanner(
     aligned: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    val banner by animateColorAsState(
+        targetValue = if (aligned) Viewfinder.Accent.copy(alpha = 0.92f) else Viewfinder.Dim,
+        animationSpec = tween(durationMillis = 240),
+        label = "banner",
+    )
+    val titleColor by animateColorAsState(
+        targetValue = if (aligned) Viewfinder.OnAccent else Viewfinder.Text,
+        animationSpec = tween(durationMillis = 240),
+        label = "bannerTitle",
+    )
+    val bodyColor by animateColorAsState(
+        targetValue = if (aligned) Viewfinder.OnAccent else Viewfinder.Muted,
+        animationSpec = tween(durationMillis = 240),
+        label = "bannerBody",
+    )
     Column(
         modifier = modifier
             .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(16.dp))
-            .background(if (aligned) Viewfinder.Accent.copy(alpha = 0.92f) else Viewfinder.Dim)
+            .background(banner)
             .padding(horizontal = 14.dp, vertical = 8.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        val titleColor = if (aligned) Viewfinder.OnAccent else Viewfinder.Text
-        val bodyColor = if (aligned) Viewfinder.OnAccent else Viewfinder.Muted
-        if (scene.isNotBlank()) {
-            Text(scene, color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+        AnimatedContent(
+            targetState = scene,
+            transitionSpec = {
+                fadeIn(tween(220)) togetherWith fadeOut(tween(140))
+            },
+            label = "sceneChip",
+        ) { label ->
+            if (label.isNotBlank()) {
+                Text(label, color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+            }
         }
-        Text(hint, color = bodyColor, fontSize = 13.sp)
+        AnimatedContent(
+            targetState = hint,
+            transitionSpec = {
+                fadeIn(tween(200)) togetherWith fadeOut(tween(120))
+            },
+            label = "hintChip",
+        ) { line ->
+            Text(line, color = bodyColor, fontSize = 13.sp)
+        }
         if (why.isNotBlank()) {
             Text(why, color = bodyColor.copy(alpha = 0.85f), fontSize = 11.sp)
         }
@@ -463,6 +503,7 @@ private fun BottomBar(
     steps: List<LensStep>,
     activeLensId: String?,
     suggestedLensId: String?,
+    lensSwitchEpoch: Long,
     onLens: (LensStep) -> Unit,
     onFilter: (FilterLook) -> Unit,
     onToggleFilters: () -> Unit,
@@ -485,27 +526,16 @@ private fun BottomBar(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 steps.forEach { step ->
-                    val active = step.id == activeLensId
-                    val suggested = step.id == suggestedLensId
-                    Text(
-                        text = if (suggested && !active) {
+                    LensChip(
+                        label = if (step.id == suggestedLensId && step.id != activeLensId) {
                             stringResource(R.string.lens_suggested, step.label)
                         } else {
                             step.label
                         },
-                        color = if (active) Viewfinder.OnAccent else Viewfinder.Text,
-                        fontSize = 13.sp,
-                        fontWeight = if (suggested) FontWeight.SemiBold else FontWeight.Normal,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(if (active) Viewfinder.Accent else Viewfinder.Dim)
-                            .border(
-                                width = if (suggested && !active) 1.dp else 0.dp,
-                                color = Viewfinder.Accent,
-                                shape = RoundedCornerShape(16.dp),
-                            )
-                            .clickable { onLens(step) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        active = step.id == activeLensId,
+                        suggested = step.id == suggestedLensId && step.id != activeLensId,
+                        confirmEpoch = lensSwitchEpoch,
+                        onClick = { onLens(step) },
                     )
                 }
             }
@@ -543,6 +573,58 @@ private fun BottomBar(
             fontSize = 11.sp,
         )
     }
+}
+
+@Composable
+private fun LensChip(
+    label: String,
+    active: Boolean,
+    suggested: Boolean,
+    confirmEpoch: Long,
+    onClick: () -> Unit,
+) {
+    var confirm by remember { mutableStateOf(false) }
+    LaunchedEffect(confirmEpoch, active) {
+        if (!active || confirmEpoch == 0L) return@LaunchedEffect
+        confirm = true
+        delay(340)
+        confirm = false
+    }
+    val scale by animateFloatAsState(
+        targetValue = if (confirm) 1.08f else 1f,
+        animationSpec = spring(dampingRatio = 0.72f, stiffness = 520f),
+        label = "lensScale",
+    )
+    val background by animateColorAsState(
+        targetValue = if (active) Viewfinder.Accent else Viewfinder.Dim,
+        animationSpec = tween(180),
+        label = "lensBg",
+    )
+    val foreground by animateColorAsState(
+        targetValue = if (active) Viewfinder.OnAccent else Viewfinder.Text,
+        animationSpec = tween(180),
+        label = "lensFg",
+    )
+    Text(
+        text = label,
+        color = foreground,
+        fontSize = 13.sp,
+        fontWeight = if (suggested || active) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+            }
+            .clip(RoundedCornerShape(16.dp))
+            .background(background)
+            .border(
+                width = if (suggested) 1.dp else 0.dp,
+                color = Viewfinder.Accent,
+                shape = RoundedCornerShape(16.dp),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    )
 }
 
 @Composable
