@@ -37,6 +37,8 @@ data class CameraUiState(
     val why: UiText? = null,
     val sceneLabel: UiText? = null,
     val aligned: Boolean = false,
+    val cue: SceneCue = SceneCue.NONE,
+    val cueSubject: Rect? = null,
     val focusPoint: Offset? = null,
     val horizonDegrees: Float = 0f,
     val viewWidth: Float = 0f,
@@ -136,6 +138,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 aiEnabled = enable,
                 frameLocked = false,
                 aligned = false,
+                cue = SceneCue.NONE,
+                cueSubject = null,
             )
         }
         if (!enable) {
@@ -236,6 +240,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
             it.copy(
                 frameLocked = false,
                 aligned = false,
+                cue = SceneCue.NONE,
+                cueSubject = null,
                 frame = Rect(0f, 0f, it.viewWidth, it.viewHeight),
             )
         }
@@ -396,6 +402,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                     sceneLabel = decision.sceneLabel,
                     why = decision.why,
                     hint = decision.hint,
+                    cue = SceneCue.NONE,
+                    cueSubject = null,
                     lockEpoch = it.lockEpoch + 1,
                 )
             }
@@ -491,6 +499,8 @@ class CameraViewModel(application: Application) : AndroidViewModel(application) 
                 why = decision.why ?: it.why,
                 sceneLabel = if (updateScene) decision.sceneLabel else it.sceneLabel,
                 scene = if (updateScene) decision.scene else it.scene,
+                cue = decision.cue,
+                cueSubject = decision.subject,
             )
         }
     }

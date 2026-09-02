@@ -20,6 +20,15 @@ enum class SceneKind {
     UNKNOWN,
 }
 
+/** Directional guidance drawn on the viewfinder while the frame is acquiring. */
+enum class SceneCue {
+    NONE,
+    MOVE_LEFT,
+    MOVE_RIGHT,
+    MOVE_CLOSER,
+    MOVE_BACK,
+}
+
 data class SceneLabel(
     val text: String,
     val confidence: Float,
@@ -40,6 +49,7 @@ data class DirectorDecision(
     val focus: Offset?,
     val hint: UiText,
     val why: UiText,
+    val cue: SceneCue,
 )
 
 object SceneDirector {
@@ -72,7 +82,7 @@ object SceneDirector {
             maxZoom = steps.maxOfOrNull { it.zoom } ?: currentZoom,
             front = front,
         )
-        val (hint, why) = coach(scene, recipe, lens, subject, viewWidth, viewHeight, horizonDegrees)
+        val (hint, why, cue) = coach(scene, recipe, lens, subject, viewWidth, viewHeight, horizonDegrees)
         return DirectorDecision(
             scene = scene,
             recipe = recipe,
@@ -83,6 +93,7 @@ object SceneDirector {
             focus = subject?.center,
             hint = hint,
             why = why,
+            cue = cue,
         )
     }
 
@@ -183,6 +194,12 @@ object SceneDirector {
         return adjusted.coerceIn(minZoom, ceiling)
     }
 
+    private data class CoachLine(
+        val hint: UiText,
+        val why: UiText,
+        val cue: SceneCue,
+    )
+
     private fun coach(
         scene: SceneKind,
         recipe: SceneRecipe,
@@ -191,7 +208,7 @@ object SceneDirector {
         viewWidth: Float,
         viewHeight: Float,
         horizonDegrees: Float,
-    ): Pair<UiText, UiText> {
+    ): CoachLine {
         val lensWhy = UiText(
             when (lens?.role) {
                 LensRole.TELE -> R.string.why_tele
@@ -201,25 +218,29 @@ object SceneDirector {
             },
         )
         if (abs(horizonDegrees) > 3.5f) {
-            return UiText(R.string.hint_level_first) to lensWhy
+            return CoachLine(UiText(R.string.hint_level_first), lensWhy, SceneCue.NONE)
         }
         if (subject != null && viewWidth > 1f && recipe != SceneRecipe.LANDSCAPE) {
             val targetX = viewWidth * recipe.subjectBias
             val dx = subject.center.x - targetX
             if (abs(dx) > viewWidth * 0.08f) {
                 val left = dx > 0f
-                return UiText(
-                    if (left) R.string.hint_subject_third_left else R.string.hint_subject_third_right,
-                ) to lensWhy
+                return CoachLine(
+                    UiText(
+                        if (left) R.string.hint_subject_third_left else R.string.hint_subject_third_right,
+                    ),
+                    lensWhy,
+                    if (left) SceneCue.MOVE_LEFT else SceneCue.MOVE_RIGHT,
+                )
             }
             val fill = subject.height / max(viewHeight, 1f)
             if (scene == SceneKind.PORTRAIT || scene == SceneKind.PET) {
                 val target = recipe.fillRatio.coerceAtLeast(0.28f)
                 if (fill < target * 0.72f) {
-                    return UiText(R.string.hint_subject_small) to lensWhy
+                    return CoachLine(UiText(R.string.hint_subject_small), lensWhy, SceneCue.MOVE_CLOSER)
                 }
                 if (fill > target * 1.35f) {
-                    return UiText(R.string.hint_too_full) to lensWhy
+                    return CoachLine(UiText(R.string.hint_too_full), lensWhy, SceneCue.MOVE_BACK)
                 }
             }
         }
@@ -234,7 +255,7 @@ object SceneDirector {
                 SceneKind.MACRO -> R.string.hint_ready_generic
             },
         )
-        return ready to lensWhy
+        return CoachLine(ready, lensWhy, SceneCue.NONE)
     }
 }
 

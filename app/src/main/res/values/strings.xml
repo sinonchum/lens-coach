@@ -20,6 +20,7 @@
     <string name="shutter_hint_locked">Tap the dim area to release the frame · double-tap to shoot</string>
     <string name="shoot">Shoot</string>
     <string name="review_photo">Photo preview</string>
+    <string name="review_scene_tag">%1$s · %2$s crop</string>
     <string name="retake">Retake</string>
     <string name="save">Save</string>
     <string name="view_action">View</string>

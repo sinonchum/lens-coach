@@ -87,4 +87,29 @@ class SceneDirectorTest {
         val decision = decide(front = true, faces = listOf(Rect(150f, 250f, 250f, 400f)))
         assertEquals(1f, decision.zoom, 0.01f)
     }
+
+    @Test
+    fun `cue directs the subject toward the target third slot`() {
+        // Portrait slot sits at x = 400 * 0.38 = 152.
+        val rightOfSlot = decide(faces = listOf(Rect(260f, 200f, 340f, 320f)))
+        assertEquals(SceneKind.PORTRAIT, rightOfSlot.scene)
+        assertEquals(SceneCue.MOVE_LEFT, rightOfSlot.cue)
+        val leftOfSlot = decide(faces = listOf(Rect(10f, 200f, 70f, 320f)))
+        assertEquals(SceneCue.MOVE_RIGHT, leftOfSlot.cue)
+    }
+
+    @Test
+    fun `cue flags subject size for portraits`() {
+        val small = decide(faces = listOf(Rect(120f, 300f, 184f, 380f)))
+        assertEquals(SceneCue.MOVE_CLOSER, small.cue)
+        val big = decide(faces = listOf(Rect(120f, 150f, 184f, 650f)))
+        assertEquals(SceneCue.MOVE_BACK, big.cue)
+    }
+
+    @Test
+    fun `centered subject clears the cue`() {
+        // Center x on the slot (152) and fill 260/800 = 0.33 inside the target band.
+        val decision = decide(faces = listOf(Rect(120f, 240f, 184f, 500f)))
+        assertEquals(SceneCue.NONE, decision.cue)
+    }
 }

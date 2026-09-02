@@ -4,8 +4,12 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -27,8 +31,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.lenscoach.android.camera.SceneCue
 import com.lenscoach.android.ui.Viewfinder
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 import kotlinx.coroutines.launch
 
 /**
@@ -45,6 +53,8 @@ private data class OverlayMetrics(
     val focusRadius: Float,
     val focusStroke: Float,
     val focusDot: Float,
+    val arrowLen: Float,
+    val arrowStroke: Float,
     val faceCorner: CornerRadius,
 )
 
@@ -58,6 +68,8 @@ fun CompositionOverlay(
     lockEpoch: Long = 0L,
     focusPoint: Offset?,
     horizonDegrees: Float,
+    cue: SceneCue = SceneCue.NONE,
+    cueSubject: Rect? = null,
     modifier: Modifier = Modifier,
 ) {
     val metrics = with(LocalDensity.current) {
@@ -71,6 +83,8 @@ fun CompositionOverlay(
             focusRadius = 16.dp.toPx(),
             focusStroke = 2.dp.toPx(),
             focusDot = 2.5.dp.toPx(),
+            arrowLen = 44.dp.toPx(),
+            arrowStroke = 3.dp.toPx(),
             faceCorner = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
         )
     }
@@ -89,6 +103,13 @@ fun CompositionOverlay(
         targetValue = if (frame.width > 8f) 0.58f else 0f,
         animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
         label = "dimAlpha",
+    )
+    val cueTransition = rememberInfiniteTransition(label = "cuePulse")
+    val cueAlpha by cueTransition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse),
+        label = "cueAlpha",
     )
 
     LaunchedEffect(frame, frameLocked) {
@@ -233,6 +254,65 @@ fun CompositionOverlay(
             }
         }
 
+        if (!frameLocked && cue != SceneCue.NONE) {
+            val color = Viewfinder.Accent.copy(alpha = cueAlpha)
+            val pad = size.width * 0.04f
+            val len = metrics.arrowLen
+            val stroke = metrics.arrowStroke
+            when (cue) {
+                SceneCue.MOVE_LEFT, SceneCue.MOVE_RIGHT -> {
+                    val anchor = cueSubject?.center ?: Offset(size.width / 2f, size.height / 2f)
+                    val cx = anchor.x.coerceIn(pad + len, size.width - pad - len)
+                    val cy = anchor.y.coerceIn(pad + len, size.height - pad - len)
+                    if (cue == SceneCue.MOVE_LEFT) {
+                        drawArrow(Offset(cx + len / 2f, cy), Offset(cx - len / 2f, cy), color, stroke)
+                    } else {
+                        drawArrow(Offset(cx - len / 2f, cy), Offset(cx + len / 2f, cy), color, stroke)
+                    }
+                }
+                SceneCue.MOVE_CLOSER, SceneCue.MOVE_BACK -> {
+                    val half = 1f
+                    val s = cueSubject ?: Rect(
+                        size.width / 2f - half,
+                        size.height / 2f - half,
+                        size.width / 2f + half,
+                        size.height / 2f + half,
+                    )
+                    val cy = s.center.y.coerceIn(pad, size.height - pad)
+                    val leftX = s.left - pad
+                    val rightX = s.right + pad
+                    if (cue == SceneCue.MOVE_CLOSER) {
+                        drawArrow(
+                            Offset((leftX - len).coerceAtLeast(pad), cy),
+                            Offset(leftX.coerceAtMost(size.width - pad), cy),
+                            color,
+                            stroke,
+                        )
+                        drawArrow(
+                            Offset((rightX + len).coerceAtMost(size.width - pad), cy),
+                            Offset(rightX.coerceAtLeast(pad), cy),
+                            color,
+                            stroke,
+                        )
+                    } else {
+                        drawArrow(
+                            Offset(leftX.coerceAtLeast(pad), cy),
+                            Offset((leftX - len).coerceAtLeast(pad), cy),
+                            color,
+                            stroke,
+                        )
+                        drawArrow(
+                            Offset(rightX.coerceAtMost(size.width - pad), cy),
+                            Offset((rightX + len).coerceAtMost(size.width - pad), cy),
+                            color,
+                            stroke,
+                        )
+                    }
+                }
+                SceneCue.NONE -> Unit
+            }
+        }
+
         if (kotlin.math.abs(horizonDegrees) > 0.8f) {
             rotate(horizonDegrees, pivot = center) {
                 val y = size.height * 0.5f
@@ -286,4 +366,30 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCornerBrackets(
             )
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrow(
+    from: Offset,
+    to: Offset,
+    color: Color,
+    stroke: Float,
+) {
+    drawLine(color, from, to, stroke, cap = StrokeCap.Round)
+    val angle = atan2(to.y - from.y, to.x - from.x)
+    val headLen = ((to - from).getDistance() * 0.32f).coerceAtLeast(stroke * 3f)
+    val spread = 0.5f
+    drawLine(
+        color,
+        to,
+        Offset(to.x - cos(angle + spread) * headLen, to.y - sin(angle + spread) * headLen),
+        stroke,
+        cap = StrokeCap.Round,
+    )
+    drawLine(
+        color,
+        to,
+        Offset(to.x - cos(angle - spread) * headLen, to.y - sin(angle - spread) * headLen),
+        stroke,
+        cap = StrokeCap.Round,
+    )
 }

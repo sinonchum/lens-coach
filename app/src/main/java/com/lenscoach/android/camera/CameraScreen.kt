@@ -138,6 +138,7 @@ import com.lenscoach.android.ui.asString
 import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.max
 import kotlinx.coroutines.delay
@@ -447,6 +448,8 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             lockEpoch = state.lockEpoch,
             focusPoint = state.focusPoint,
             horizonDegrees = state.horizonDegrees,
+            cue = state.cue,
+            cueSubject = state.cueSubject,
             modifier = Modifier
                 .fillMaxSize()
                 .pointerInput(Unit) {
@@ -543,10 +546,18 @@ private fun LiveCamera(viewModel: CameraViewModel) {
         state.reviewBitmap?.let { bitmap ->
             val reviewAlpha = remember(bitmap) { Animatable(0f) }
             LaunchedEffect(reviewAlpha) { reviewAlpha.animateTo(1f, tween(220)) }
+            val sceneName = state.sceneLabel?.asString().orEmpty()
+            val aspect = aspectLabel(state.frame)
+            val sceneTag = when {
+                sceneName.isBlank() -> aspect
+                aspect == null -> sceneName
+                else -> stringResource(R.string.review_scene_tag, sceneName, aspect)
+            }
             ReviewOverlay(
                 bitmap = bitmap,
                 filter = state.filter,
                 saving = state.saving,
+                sceneTag = sceneTag,
                 onRetake = viewModel::discardReview,
                 onSave = {
                     if (!state.saving) {
@@ -1014,6 +1025,7 @@ private fun ReviewOverlay(
     bitmap: Bitmap,
     filter: FilterLook,
     saving: Boolean,
+    sceneTag: String?,
     onRetake: () -> Unit,
     onSave: () -> Unit,
     modifier: Modifier = Modifier,
@@ -1029,14 +1041,26 @@ private fun ReviewOverlay(
             contentScale = ContentScale.Fit,
             modifier = Modifier.fillMaxSize(),
         )
-        Text(
-            text = stringResource(filter.labelRes),
-            color = Viewfinder.Text,
+        Column(
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
                 .padding(top = 16.dp),
-        )
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = stringResource(filter.labelRes),
+                color = Viewfinder.Text,
+            )
+            if (!sceneTag.isNullOrBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = sceneTag,
+                    color = Viewfinder.Muted,
+                    fontSize = 12.sp,
+                )
+            }
+        }
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -1166,6 +1190,18 @@ private fun thumbnailFrom(bitmap: Bitmap, targetPx: Int): Bitmap {
         (bitmap.height * scale).toInt().coerceAtLeast(1),
         true,
     )
+}
+
+/** Human label for the crop aspect actually used for the capture, if it is a known recipe. */
+private fun aspectLabel(frame: Rect): String? {
+    if (frame.width < 8f || frame.height < 8f) return null
+    val ratio = frame.width / frame.height
+    return when {
+        abs(ratio - 0.8f) < 0.05f -> "4:5"
+        abs(ratio - 1.5f) < 0.08f -> "3:2"
+        abs(ratio - 16f / 9f) < 0.08f -> "16:9"
+        else -> null
+    }
 }
 
 private fun ImageProxy.toRotatedBitmap(mirror: Boolean): Bitmap {

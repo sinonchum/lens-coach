@@ -20,6 +20,7 @@
     <string name="shutter_hint_locked">Touchez la zone assombrie pour libérer le cadre · double-tapez pour shooter</string>
     <string name="shoot">Déclencher</string>
     <string name="review_photo">Aperçu de la photo</string>
+    <string name="review_scene_tag">%1$s · recadrage %2$s</string>
     <string name="retake">Reprendre</string>
     <string name="save">Enregistrer</string>
     <string name="view_action">Voir</string>

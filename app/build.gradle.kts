@@ -12,8 +12,8 @@ android {
         applicationId = "com.lenscoach.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.4.3"
+        versionCode = 9
+        versionName = "0.4.3-rc2"
     }
 
     buildTypes {
