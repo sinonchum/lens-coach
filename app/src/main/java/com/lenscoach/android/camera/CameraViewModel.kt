@@ -1,12 +1,17 @@
 package com.lenscoach.android.camera
 
+import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import com.lenscoach.android.R
 import com.lenscoach.android.overlay.FramingEngine
 import com.lenscoach.android.overlay.SceneRecipe
@@ -17,6 +22,8 @@ import kotlin.math.hypot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
+
+data class SavedShot(val uri: Uri, val token: Long)
 
 data class CameraUiState(
     val lensFacing: Int = CameraSelector.LENS_FACING_BACK,
@@ -35,8 +42,13 @@ data class CameraUiState(
     val viewWidth: Float = 0f,
     val viewHeight: Float = 0f,
     val capturing: Boolean = false,
+    val saving: Boolean = false,
     val reviewBitmap: Bitmap? = null,
-    val saveMessage: UiText? = null,
+    val savedShot: SavedShot? = null,
+    val latestUri: Uri? = null,
+    val thumbnail: Bitmap? = null,
+    val notice: UiText? = null,
+    val noticeToken: Long = 0L,
     val aiEnabled: Boolean = true,
     val inventory: CameraInventory? = null,
     val lensSteps: List<LensStep> = emptyList(),
@@ -52,8 +64,18 @@ data class CameraUiState(
     val frameLocked: Boolean = false,
 )
 
-class CameraViewModel : ViewModel() {
-    private val _state = MutableStateFlow(CameraUiState())
+class CameraViewModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = application.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val _state = MutableStateFlow(
+        CameraUiState(
+            flashMode = prefs.getInt(KEY_FLASH, ImageCapture.FLASH_MODE_OFF).coerceIn(0, 2),
+            filter = prefs.getString(KEY_FILTER, null)
+                ?.let { name -> FilterLook.entries.firstOrNull { it.name == name } }
+                ?: FilterLook.NEUTRAL,
+            aiEnabled = prefs.getBoolean(KEY_AI, true),
+        ),
+    )
     val state: StateFlow<CameraUiState> = _state
 
     private var lastAppliedZoom = 1f
@@ -70,6 +92,7 @@ class CameraViewModel : ViewModel() {
     private var lastHintAt = 0L
     private var lockedSubjectCenter: Offset? = null
     private var zoomForRecipe: SceneRecipe? = null
+    private var savedToken = 0L
 
     fun loadInventory(inventory: CameraInventory) {
         _state.update {
@@ -99,6 +122,7 @@ class CameraViewModel : ViewModel() {
     }
 
     fun setFilter(filter: FilterLook) {
+        prefs.edit().putString(KEY_FILTER, filter.name).apply()
         _state.update { it.copy(filter = filter) }
     }
 
@@ -106,6 +130,7 @@ class CameraViewModel : ViewModel() {
         val enable = !_state.value.aiEnabled
         if (enable) userLensUntil = 0L
         resetAcquire(unlock = true)
+        prefs.edit().putBoolean(KEY_AI, enable).apply()
         _state.update {
             it.copy(
                 aiEnabled = enable,
@@ -122,7 +147,7 @@ class CameraViewModel : ViewModel() {
     }
 
     fun selectLens(step: LensStep) {
-        userLensUntil = SystemClock.uptimeMillis() + 15_000L
+        userLensUntil = SystemClock.uptimeMillis() + USER_LENS_MS
         lastAppliedZoom = step.zoom
         _state.update {
             it.copy(
@@ -131,6 +156,10 @@ class CameraViewModel : ViewModel() {
                 zoomToken = it.zoomToken + 1,
             )
         }
+    }
+
+    fun onUserZoom() {
+        userLensUntil = SystemClock.uptimeMillis() + USER_LENS_MS
     }
 
     fun toggleFacing() {
@@ -155,14 +184,13 @@ class CameraViewModel : ViewModel() {
     }
 
     fun cycleFlash() {
-        _state.update {
-            val next = when (it.flashMode) {
-                ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
-                ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
-                else -> ImageCapture.FLASH_MODE_OFF
-            }
-            it.copy(flashMode = next)
+        val next = when (_state.value.flashMode) {
+            ImageCapture.FLASH_MODE_OFF -> ImageCapture.FLASH_MODE_AUTO
+            ImageCapture.FLASH_MODE_AUTO -> ImageCapture.FLASH_MODE_ON
+            else -> ImageCapture.FLASH_MODE_OFF
         }
+        prefs.edit().putInt(KEY_FLASH, next).apply()
+        _state.update { it.copy(flashMode = next) }
     }
 
     fun onPreviewSize(width: Float, height: Float) {
@@ -194,16 +222,23 @@ class CameraViewModel : ViewModel() {
         directFromScene()
     }
 
-    fun showFocus(point: Offset, recompose: Boolean = false) {
-        if (recompose && _state.value.frameLocked) {
-            resetAcquire(unlock = true)
-            _state.update { it.copy(frameLocked = false, aligned = false) }
-        }
+    fun showFocus(point: Offset) {
         _state.update { it.copy(focusPoint = point) }
     }
 
     fun clearFocus() {
         _state.update { it.copy(focusPoint = null) }
+    }
+
+    fun unlockFraming() {
+        resetAcquire(unlock = true)
+        _state.update {
+            it.copy(
+                frameLocked = false,
+                aligned = false,
+                frame = Rect(0f, 0f, it.viewWidth, it.viewHeight),
+            )
+        }
     }
 
     fun consumeActuation() {
@@ -214,27 +249,62 @@ class CameraViewModel : ViewModel() {
         _state.update { it.copy(capturing = capturing) }
     }
 
+    fun setSaving(saving: Boolean) {
+        _state.update { it.copy(saving = saving) }
+    }
+
     fun showReview(bitmap: Bitmap) {
-        _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
-        _state.update { it.copy(reviewBitmap = bitmap, capturing = false, saveMessage = null) }
+        val old = _state.value.reviewBitmap
+        _state.update { it.copy(reviewBitmap = bitmap, capturing = false) }
+        recycleSoon(old)
     }
 
     fun discardReview() {
-        _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
-        _state.update { it.copy(reviewBitmap = null, capturing = false, saveMessage = null) }
+        val old = _state.value.reviewBitmap
+        _state.update { it.copy(reviewBitmap = null, capturing = false) }
+        recycleSoon(old)
     }
 
-    fun onSaved(ok: Boolean) {
-        if (ok) {
-            _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
-            _state.update { it.copy(reviewBitmap = null, saveMessage = UiText(R.string.saved_ok)) }
+    fun setThumbnail(bitmap: Bitmap) {
+        val old = _state.value.thumbnail
+        _state.update { it.copy(thumbnail = bitmap) }
+        recycleSoon(old)
+    }
+
+    fun onSaved(uri: Uri?, thumbnail: Bitmap?) {
+        val previous = _state.value.reviewBitmap
+        val shot = uri?.let { value -> SavedShot(value, ++savedToken) }
+        _state.update {
+            it.copy(
+                saving = false,
+                reviewBitmap = if (uri != null) null else it.reviewBitmap,
+                thumbnail = thumbnail ?: it.thumbnail,
+                latestUri = uri ?: it.latestUri,
+                savedShot = shot ?: it.savedShot,
+            )
+        }
+        if (uri != null) {
+            recycleSoon(previous)
         } else {
-            _state.update { it.copy(saveMessage = UiText(R.string.save_failed)) }
+            postNotice(UiText(R.string.save_failed))
         }
     }
 
-    fun consumeMessage() {
-        _state.update { it.copy(saveMessage = null) }
+    fun captureFailed(message: UiText) {
+        _state.update { it.copy(capturing = false) }
+        postNotice(message)
+    }
+
+    fun postNotice(message: UiText) {
+        _state.update { it.copy(notice = message, noticeToken = it.noticeToken + 1) }
+    }
+
+    fun consumeNotice() {
+        _state.update { it.copy(notice = null) }
+    }
+
+    fun consumeSaved() {
+        _state.update { it.copy(savedShot = null) }
     }
 
     private fun directFromScene() {
@@ -439,8 +509,17 @@ class CameraViewModel : ViewModel() {
         }
     }
 
+    // Compose may still draw a replaced bitmap on the frame in flight; recycling
+    // immediately risks "trying to use a recycled bitmap", so defer it briefly.
+    private fun recycleSoon(bitmap: Bitmap?) {
+        bitmap ?: return
+        mainHandler.postDelayed({
+            if (!bitmap.isRecycled) bitmap.recycle()
+        }, RECYCLE_DELAY_MS)
+    }
+
     override fun onCleared() {
-        _state.value.reviewBitmap?.takeUnless { it.isRecycled }?.recycle()
+        recycleSoon(_state.value.reviewBitmap)
         super.onCleared()
     }
 
@@ -451,6 +530,12 @@ class CameraViewModel : ViewModel() {
         const val UNLOCK_PAN_HOLD = 5
         const val PAN_FRACTION = 0.22f
         const val SUBJECT_LOST_MS = 1100L
+        const val USER_LENS_MS = 15_000L
+        const val RECYCLE_DELAY_MS = 800L
+        const val PREFS_NAME = "lens_coach"
+        const val KEY_FLASH = "flash_mode"
+        const val KEY_FILTER = "filter"
+        const val KEY_AI = "ai_enabled"
     }
 }
 

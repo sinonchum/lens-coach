@@ -1,21 +1,27 @@
 package com.lenscoach.android.camera
 
 import android.Manifest
+import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.RenderEffect as AndroidRenderEffect
 import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.net.Uri
 import android.os.Build
 import android.os.VibrationEffect
 import android.os.Vibrator
 import android.os.VibratorManager
+import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.RequiresApi
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageCapture
@@ -27,18 +33,25 @@ import androidx.camera.view.CameraController
 import androidx.camera.view.LifecycleCameraController
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -52,7 +65,9 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -60,10 +75,17 @@ import androidx.compose.material.icons.outlined.Cameraswitch
 import androidx.compose.material.icons.outlined.FlashAuto
 import androidx.compose.material.icons.outlined.FlashOff
 import androidx.compose.material.icons.outlined.FlashOn
+import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -73,7 +95,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RenderEffect as ComposeRenderEffect
+import androidx.compose.ui.graphics.asComposeRenderEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -83,7 +109,11 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -102,12 +132,17 @@ import com.lenscoach.android.capture.CaptureCrop
 import com.lenscoach.android.capture.CaptureStore
 import com.lenscoach.android.overlay.CompositionOverlay
 import com.lenscoach.android.style.FilterLook
+import com.lenscoach.android.ui.UiText
 import com.lenscoach.android.ui.Viewfinder
 import com.lenscoach.android.ui.asString
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.math.atan2
+import kotlin.math.max
 import kotlinx.coroutines.delay
+
+private const val THUMBNAIL_PX = 144
 
 @Composable
 fun CameraScreen(viewModel: CameraViewModel) {
@@ -118,29 +153,94 @@ fun CameraScreen(viewModel: CameraViewModel) {
                 PackageManager.PERMISSION_GRANTED,
         )
     }
+    var permanentlyDenied by remember { mutableStateOf(false) }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { ok ->
         granted = ok
         if (!ok) {
-            Toast.makeText(context, context.getString(R.string.permission_rationale), Toast.LENGTH_LONG).show()
+            val activity = context as? Activity
+            permanentlyDenied = activity != null &&
+                !activity.shouldShowRequestPermissionRationale(Manifest.permission.CAMERA)
+            if (!permanentlyDenied) {
+                Toast.makeText(context, context.getString(R.string.permission_rationale), Toast.LENGTH_LONG).show()
+            }
         }
     }
     LaunchedEffect(granted) {
         if (!granted) launcher.launch(Manifest.permission.CAMERA)
     }
     if (!granted) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Viewfinder.Chrome),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(stringResource(R.string.permission_needed), color = Viewfinder.Text)
-        }
+        PermissionScreen(
+            permanentlyDenied = permanentlyDenied,
+            onOpenSettings = {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                            Uri.fromParts("package", context.packageName, null),
+                        ),
+                    )
+                }
+            },
+        )
         return
     }
     LiveCamera(viewModel)
+}
+
+@Composable
+private fun PermissionScreen(permanentlyDenied: Boolean, onOpenSettings: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Viewfinder.Chrome)
+            .padding(horizontal = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Outlined.PhotoCamera,
+            contentDescription = null,
+            tint = Viewfinder.Muted,
+            modifier = Modifier.size(56.dp),
+        )
+        Spacer(Modifier.height(20.dp))
+        Text(
+            stringResource(R.string.permission_needed),
+            color = Viewfinder.Text,
+            fontSize = 17.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(10.dp))
+        Text(
+            stringResource(if (permanentlyDenied) R.string.permission_permanent else R.string.permission_rationale),
+            color = Viewfinder.Muted,
+            fontSize = 13.sp,
+            textAlign = TextAlign.Center,
+        )
+        if (permanentlyDenied) {
+            Spacer(Modifier.height(24.dp))
+            Box(
+                modifier = Modifier
+                    .minimumInteractiveComponentSize()
+                    .selectable(selected = false, role = Role.Button, onClick = onOpenSettings),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    stringResource(R.string.open_settings),
+                    color = Viewfinder.OnAccent,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Viewfinder.Accent)
+                        .padding(horizontal = 24.dp, vertical = 10.dp),
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -150,6 +250,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     var showFilters by remember { mutableStateOf(false) }
     val analysisExecutor = remember { Executors.newSingleThreadExecutor() }
+    val captureExecutor = remember { Executors.newSingleThreadExecutor() }
     val faceDetector = remember {
         FaceDetection.getClient(
             FaceDetectorOptions.Builder()
@@ -188,9 +289,15 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             setEnabledUseCases(CameraController.IMAGE_CAPTURE or CameraController.IMAGE_ANALYSIS)
         }
     }
+    val snackbarHostState = remember { SnackbarHostState() }
 
     LaunchedEffect(Unit) {
         runCatching { viewModel.loadInventory(LensInventory.probe(context)) }
+        captureExecutor.execute {
+            runCatching { CaptureStore.loadLatest(context, THUMBNAIL_PX) }
+                .getOrNull()
+                ?.let { latest -> viewModel.setThumbnail(latest.bitmap) }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -200,6 +307,7 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             labeler.close()
             objectDetector.close()
             analysisExecutor.shutdown()
+            captureExecutor.shutdown()
         }
     }
 
@@ -228,11 +336,10 @@ private fun LiveCamera(viewModel: CameraViewModel) {
         onDispose { sensorManager.unregisterListener(listener) }
     }
 
-    LaunchedEffect(state.lensFacing, state.flashMode) {
+    LaunchedEffect(state.lensFacing) {
         cameraController.cameraSelector = CameraSelector.Builder()
             .requireLensFacing(state.lensFacing)
             .build()
-        cameraController.imageCaptureFlashMode = state.flashMode
         cameraController.bindToLifecycle(lifecycleOwner)
         previewView.controller = cameraController
         val mainExecutor = ContextCompat.getMainExecutor(context)
@@ -262,6 +369,11 @@ private fun LiveCamera(viewModel: CameraViewModel) {
         )
     }
 
+    // Flash mode is a plain use-case field; changing it must not rebind the camera.
+    LaunchedEffect(state.flashMode) {
+        cameraController.imageCaptureFlashMode = state.flashMode
+    }
+
     LaunchedEffect(state.zoomToken) {
         val zoom = state.requestedZoom ?: return@LaunchedEffect
         runCatching { cameraController.setZoomRatio(zoom) }
@@ -279,10 +391,33 @@ private fun LiveCamera(viewModel: CameraViewModel) {
         }
     }
 
-    LaunchedEffect(state.saveMessage) {
-        val message = state.saveMessage ?: return@LaunchedEffect
+    LaunchedEffect(state.lockEpoch) {
+        if (state.lockEpoch > 0L) vibrate(context, durationMs = 22, amplitude = 80)
+    }
+
+    LaunchedEffect(state.noticeToken) {
+        val message = state.notice ?: return@LaunchedEffect
         Toast.makeText(context, message.resolve(context), Toast.LENGTH_SHORT).show()
-        viewModel.consumeMessage()
+        viewModel.consumeNotice()
+    }
+
+    LaunchedEffect(state.savedShot) {
+        val shot = state.savedShot ?: return@LaunchedEffect
+        val result = snackbarHostState.showSnackbar(
+            message = context.getString(R.string.saved_ok),
+            actionLabel = context.getString(R.string.view_action),
+            duration = SnackbarDuration.Short,
+        )
+        if (result == SnackbarResult.ActionPerformed) openSavedPhoto(context, shot.uri)
+        viewModel.consumeSaved()
+    }
+
+    val shutterFlash = remember { Animatable(0f) }
+    LaunchedEffect(state.capturing) {
+        if (state.capturing) {
+            shutterFlash.snapTo(0.85f)
+            shutterFlash.animateTo(0f, tween(240, easing = FastOutSlowInEasing))
+        }
     }
 
     Box(
@@ -294,6 +429,11 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             factory = { previewView },
             modifier = Modifier
                 .fillMaxSize()
+                .graphicsLayer {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        renderEffect = lookRenderEffect(state.filter)
+                    }
+                }
                 .onSizeChanged { size ->
                     viewModel.onPreviewSize(size.width.toFloat(), size.height.toFloat())
                 },
@@ -309,22 +449,44 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             horizonDegrees = state.horizonDegrees,
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, _, zoom, _ ->
+                        if (zoom == 1f) return@detectTransformGestures
+                        val current = viewModel.state.value
+                        if (current.reviewBitmap != null || current.capturing) return@detectTransformGestures
+                        val live = cameraController.zoomState.value ?: return@detectTransformGestures
+                        val next = (live.zoomRatio * zoom).coerceIn(live.minZoomRatio, live.maxZoomRatio)
+                        runCatching { cameraController.setZoomRatio(next) }
+                        viewModel.onUserZoom()
+                    }
+                }
                 .pointerInput(state.capturing, state.reviewBitmap) {
                     detectTapGestures(
                         onTap = { offset ->
                             if (state.reviewBitmap != null || state.capturing) return@detectTapGestures
+                            val frame = state.frame
+                            if (state.frameLocked && !frame.contains(offset)) {
+                                viewModel.unlockFraming()
+                            }
                             focusAt(previewView, cameraController, offset)
-                            viewModel.showFocus(offset, recompose = true)
+                            viewModel.showFocus(offset)
                         },
                         onDoubleTap = { offset ->
                             if (state.reviewBitmap != null || state.capturing) return@detectTapGestures
                             focusAt(previewView, cameraController, offset)
                             viewModel.showFocus(offset)
-                            capture(context, cameraController, viewModel, viewModel.state.value)
+                            capture(context, cameraController, viewModel, viewModel.state.value, captureExecutor)
                         },
                     )
                 },
         )
+        if (shutterFlash.value > 0.01f) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = shutterFlash.value)),
+            )
+        }
         TopBar(
             flashMode = state.flashMode,
             aiEnabled = state.aiEnabled,
@@ -344,38 +506,59 @@ private fun LiveCamera(viewModel: CameraViewModel) {
             modifier = Modifier
                 .align(Alignment.TopCenter)
                 .statusBarsPadding()
-                .padding(top = 52.dp),
+                .padding(top = 64.dp),
         )
         BottomBar(
             filter = state.filter,
             showFilters = showFilters,
             capturing = state.capturing,
+            frameLocked = state.frameLocked,
             showLenses = state.lensFacing == CameraSelector.LENS_FACING_BACK && state.lensSteps.isNotEmpty(),
             steps = state.lensSteps,
             activeLensId = state.activeLensId,
             suggestedLensId = state.suggestedLensId,
             lensSwitchEpoch = state.lensSwitchEpoch,
+            thumbnail = state.thumbnail,
+            latestUri = state.latestUri,
+            onViewLatest = { uri -> openSavedPhoto(context, uri) },
             onLens = viewModel::selectLens,
             onFilter = viewModel::setFilter,
             onToggleFilters = { showFilters = !showFilters },
             onShutter = {
                 if (!state.capturing && state.reviewBitmap == null) {
-                    capture(context, cameraController, viewModel, viewModel.state.value)
+                    capture(context, cameraController, viewModel, viewModel.state.value, captureExecutor)
                 }
             },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding(),
         )
+        SnackbarHost(
+            snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = 172.dp),
+        )
         state.reviewBitmap?.let { bitmap ->
+            val reviewAlpha = remember(bitmap) { Animatable(0f) }
+            LaunchedEffect(reviewAlpha) { reviewAlpha.animateTo(1f, tween(220)) }
             ReviewOverlay(
                 bitmap = bitmap,
                 filter = state.filter,
+                saving = state.saving,
                 onRetake = viewModel::discardReview,
                 onSave = {
-                    val uri = CaptureStore.save(context, bitmap, state.filter.name)
-                    viewModel.onSaved(uri != null)
+                    if (!state.saving) {
+                        viewModel.setSaving(true)
+                        captureExecutor.execute {
+                            val uri = CaptureStore.save(context, bitmap, state.filter.name)
+                            val thumb = thumbnailFrom(bitmap, THUMBNAIL_PX)
+                            viewModel.onSaved(uri, thumb)
+                        }
+                    }
                 },
+                modifier = Modifier.graphicsLayer { alpha = reviewAlpha.value },
             )
         }
     }
@@ -405,17 +588,23 @@ private fun TopBar(
         IconButton(onClick = onFlash) {
             Icon(flashIcon, contentDescription = stringResource(R.string.flash), tint = Viewfinder.Text)
         }
-        Text(
-            text = stringResource(if (aiEnabled) R.string.ai_on else R.string.ai_off),
-            color = if (aiEnabled) Viewfinder.OnAccent else Viewfinder.Text,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
+        Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(16.dp))
-                .background(if (aiEnabled) Viewfinder.Accent else Viewfinder.Dim)
-                .clickable(onClick = onAi)
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        )
+                .minimumInteractiveComponentSize()
+                .selectable(selected = aiEnabled, role = Role.Button, onClick = onAi),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = stringResource(if (aiEnabled) R.string.ai_on else R.string.ai_off),
+                color = if (aiEnabled) Viewfinder.OnAccent else Viewfinder.Text,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(if (aiEnabled) Viewfinder.Accent else Viewfinder.Dim)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        }
         IconButton(onClick = onSwitch) {
             Icon(
                 Icons.Outlined.Cameraswitch,
@@ -435,6 +624,7 @@ private fun CoachBanner(
     aligned: Boolean,
     modifier: Modifier = Modifier,
 ) {
+    var expanded by remember { mutableStateOf(false) }
     val banner by animateColorAsState(
         targetValue = if (aligned) Viewfinder.Accent.copy(alpha = 0.92f) else Viewfinder.Dim,
         animationSpec = tween(durationMillis = 240),
@@ -455,19 +645,21 @@ private fun CoachBanner(
             .padding(horizontal = 16.dp)
             .clip(RoundedCornerShape(16.dp))
             .background(banner)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .animateContentSize(tween(200))
+            .clickable(
+                role = Role.Button,
+                onClickLabel = stringResource(R.string.banner_details),
+            ) { expanded = !expanded }
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        AnimatedContent(
-            targetState = scene,
-            transitionSpec = {
-                fadeIn(tween(220)) togetherWith fadeOut(tween(140))
-            },
-            label = "sceneChip",
-        ) { label ->
-            if (label.isNotBlank()) {
-                Text(label, color = titleColor, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
-            }
+        if (scene.isNotBlank()) {
+            Text(
+                scene,
+                color = titleColor.copy(alpha = 0.8f),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+            )
         }
         AnimatedContent(
             targetState = hint,
@@ -476,12 +668,35 @@ private fun CoachBanner(
             },
             label = "hintChip",
         ) { line ->
-            Text(line, color = bodyColor, fontSize = 13.sp)
+            Text(
+                line,
+                color = bodyColor,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Medium,
+                textAlign = TextAlign.Center,
+            )
         }
-        if (why.isNotBlank()) {
-            Text(why, color = bodyColor.copy(alpha = 0.85f), fontSize = 11.sp)
+        AnimatedVisibility(visible = expanded) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (why.isNotBlank()) {
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        why,
+                        color = bodyColor.copy(alpha = 0.85f),
+                        fontSize = 11.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+                if (summary.isNotBlank()) {
+                    Text(
+                        summary,
+                        color = bodyColor.copy(alpha = 0.55f),
+                        fontSize = 10.sp,
+                        textAlign = TextAlign.Center,
+                    )
+                }
+            }
         }
-        Text(summary, color = bodyColor.copy(alpha = 0.55f), fontSize = 10.sp)
     }
 }
 
@@ -500,11 +715,15 @@ private fun BottomBar(
     filter: FilterLook,
     showFilters: Boolean,
     capturing: Boolean,
+    frameLocked: Boolean,
     showLenses: Boolean,
     steps: List<LensStep>,
     activeLensId: String?,
     suggestedLensId: String?,
     lensSwitchEpoch: Long,
+    thumbnail: Bitmap?,
+    latestUri: Uri?,
+    onViewLatest: (Uri) -> Unit,
     onLens: (LensStep) -> Unit,
     onFilter: (FilterLook) -> Unit,
     onToggleFilters: () -> Unit,
@@ -517,35 +736,47 @@ private fun BottomBar(
             .padding(bottom = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        if (showFilters) {
-            FilterSheet(filter = filter, onFilter = onFilter)
-            Spacer(Modifier.height(12.dp))
-        }
-        if (showLenses) {
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                steps.forEach { step ->
-                    LensChip(
-                        label = if (step.id == suggestedLensId && step.id != activeLensId) {
-                            stringResource(R.string.lens_suggested, step.label)
-                        } else {
-                            step.label
-                        },
-                        active = step.id == activeLensId,
-                        suggested = step.id == suggestedLensId && step.id != activeLensId,
-                        confirmEpoch = lensSwitchEpoch,
-                        onClick = { onLens(step) },
-                    )
-                }
+        AnimatedVisibility(
+            visible = showFilters,
+            enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+            exit = fadeOut(tween(140)) + shrinkVertically(tween(180)),
+        ) {
+            Column {
+                FilterSheet(filter = filter, onFilter = onFilter)
+                Spacer(Modifier.height(12.dp))
             }
-            Spacer(Modifier.height(14.dp))
+        }
+        AnimatedVisibility(
+            visible = showLenses,
+            enter = fadeIn(tween(180)) + expandVertically(tween(180)),
+            exit = fadeOut(tween(140)) + shrinkVertically(tween(180)),
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    steps.forEach { step ->
+                        LensChip(
+                            label = if (step.id == suggestedLensId && step.id != activeLensId) {
+                                stringResource(R.string.lens_suggested, step.label)
+                            } else {
+                                step.label
+                            },
+                            active = step.id == activeLensId,
+                            suggested = step.id == suggestedLensId && step.id != activeLensId,
+                            confirmEpoch = lensSwitchEpoch,
+                            onClick = { onLens(step) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+            }
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 28.dp),
+                .padding(horizontal = 24.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -555,7 +786,12 @@ private fun BottomBar(
                     .size(74.dp)
                     .clip(CircleShape)
                     .border(3.dp, Viewfinder.Text, CircleShape)
-                    .clickable(enabled = !capturing, onClick = onShutter),
+                    .clickable(
+                        enabled = !capturing,
+                        role = Role.Button,
+                        onClickLabel = stringResource(R.string.shoot),
+                        onClick = onShutter,
+                    ),
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
@@ -565,14 +801,57 @@ private fun BottomBar(
                         .background(if (capturing) Viewfinder.Accent else Viewfinder.Text),
                 )
             }
-            Spacer(Modifier.size(72.dp))
+            GalleryThumb(
+                bitmap = thumbnail,
+                onClick = { latestUri?.let(onViewLatest) },
+            )
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            stringResource(R.string.shutter_hint),
+            stringResource(if (frameLocked) R.string.shutter_hint_locked else R.string.shutter_hint),
             color = Viewfinder.Muted,
             fontSize = 11.sp,
         )
+    }
+}
+
+@Composable
+private fun GalleryThumb(bitmap: Bitmap?, onClick: () -> Unit) {
+    val description = stringResource(R.string.gallery_latest)
+    Box(
+        modifier = Modifier
+            .size(52.dp)
+            .clip(CircleShape)
+            .background(Viewfinder.Dim)
+            .border(1.dp, Viewfinder.Muted.copy(alpha = 0.4f), CircleShape)
+            .then(
+                if (bitmap == null) {
+                    Modifier
+                } else {
+                    Modifier
+                        .semantics { contentDescription = description }
+                        .clickable(role = Role.Button, onClick = onClick)
+                },
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .clip(CircleShape),
+            )
+        } else {
+            Icon(
+                Icons.Outlined.Image,
+                contentDescription = description,
+                tint = Viewfinder.Muted,
+                modifier = Modifier.size(22.dp),
+            )
+        }
     }
 }
 
@@ -606,49 +885,61 @@ private fun LensChip(
         animationSpec = tween(180),
         label = "lensFg",
     )
-    Text(
-        text = label,
-        color = foreground,
-        fontSize = 13.sp,
-        fontWeight = if (suggested || active) FontWeight.SemiBold else FontWeight.Normal,
+    Box(
         modifier = Modifier
-            .graphicsLayer {
-                scaleX = scale
-                scaleY = scale
-            }
-            .clip(RoundedCornerShape(16.dp))
-            .background(background)
-            .border(
-                width = if (suggested) 1.dp else 0.dp,
-                color = Viewfinder.Accent,
-                shape = RoundedCornerShape(16.dp),
-            )
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    )
+            .minimumInteractiveComponentSize()
+            .selectable(selected = active, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = foreground,
+            fontSize = 13.sp,
+            fontWeight = if (suggested || active) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                }
+                .clip(RoundedCornerShape(16.dp))
+                .background(background)
+                .border(
+                    width = if (suggested) 1.dp else 0.dp,
+                    color = Viewfinder.Accent,
+                    shape = RoundedCornerShape(16.dp),
+                )
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
 }
 
 @Composable
 private fun FilterButton(open: Boolean, onClick: () -> Unit) {
-    Column(
+    Box(
         modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (open) Viewfinder.Accent else Viewfinder.Dim)
-            .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+            .minimumInteractiveComponentSize()
+            .selectable(selected = open, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        Icon(
-            Icons.Outlined.Tune,
-            contentDescription = stringResource(R.string.filters),
-            tint = if (open) Viewfinder.OnAccent else Viewfinder.Text,
-            modifier = Modifier.size(22.dp),
-        )
-        Text(
-            stringResource(R.string.filters),
-            color = if (open) Viewfinder.OnAccent else Viewfinder.Text,
-            fontSize = 11.sp,
-        )
+        Column(
+            modifier = Modifier
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (open) Viewfinder.Accent else Viewfinder.Dim)
+                .padding(horizontal = 14.dp, vertical = 6.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Icon(
+                Icons.Outlined.Tune,
+                contentDescription = stringResource(R.string.filters),
+                tint = if (open) Viewfinder.OnAccent else Viewfinder.Text,
+                modifier = Modifier.size(22.dp),
+            )
+            Text(
+                stringResource(R.string.filters),
+                color = if (open) Viewfinder.OnAccent else Viewfinder.Text,
+                fontSize = 11.sp,
+            )
+        }
     }
 }
 
@@ -678,17 +969,42 @@ private fun FilterSheet(
         ) {
             FilterLook.entries.forEach { look ->
                 val selected = look == filter
-                Text(
-                    text = stringResource(look.labelRes),
-                    color = if (selected) Viewfinder.OnAccent else Viewfinder.Text,
-                    fontSize = 13.sp,
+                Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(16.dp))
-                        .background(if (selected) Viewfinder.Accent else Viewfinder.Dim)
-                        .clickable { onFilter(look) }
-                        .padding(horizontal = 14.dp, vertical = 6.dp),
-                )
+                        .minimumInteractiveComponentSize()
+                        .selectable(selected = selected, role = Role.Button) { onFilter(look) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(if (selected) Viewfinder.Accent else Viewfinder.Dim)
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(look.swatch),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = stringResource(look.labelRes),
+                            color = if (selected) Viewfinder.OnAccent else Viewfinder.Text,
+                            fontSize = 13.sp,
+                        )
+                    }
+                }
             }
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.filter_preview_unsupported),
+                color = Viewfinder.Muted,
+                fontSize = 10.sp,
+            )
         }
     }
 }
@@ -697,11 +1013,13 @@ private fun FilterSheet(
 private fun ReviewOverlay(
     bitmap: Bitmap,
     filter: FilterLook,
+    saving: Boolean,
     onRetake: () -> Unit,
     onSave: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     Box(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .background(Viewfinder.Chrome),
     ) {
@@ -727,24 +1045,37 @@ private fun ReviewOverlay(
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            Text(
-                stringResource(R.string.retake),
-                color = Viewfinder.Text,
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Viewfinder.Dim)
-                    .clickable(onClick = onRetake)
-                    .padding(horizontal = 28.dp, vertical = 12.dp),
-            )
-            Text(
-                stringResource(R.string.save),
-                color = Viewfinder.OnAccent,
+                    .minimumInteractiveComponentSize()
+                    .clickable(enabled = !saving, role = Role.Button, onClick = onRetake),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    stringResource(R.string.retake),
+                    color = Viewfinder.Text,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Viewfinder.Dim)
+                        .padding(horizontal = 28.dp, vertical = 12.dp),
+                )
+            }
+            Box(
                 modifier = Modifier
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Viewfinder.Accent)
-                    .clickable(onClick = onSave)
-                    .padding(horizontal = 28.dp, vertical = 12.dp),
-            )
+                    .minimumInteractiveComponentSize()
+                    .clickable(enabled = !saving, role = Role.Button, onClick = onSave),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    stringResource(R.string.save),
+                    color = Viewfinder.OnAccent,
+                    modifier = Modifier
+                        .alpha(if (saving) 0.5f else 1f)
+                        .clip(RoundedCornerShape(22.dp))
+                        .background(Viewfinder.Accent)
+                        .padding(horizontal = 28.dp, vertical = 12.dp),
+                )
+            }
         }
     }
 }
@@ -776,11 +1107,12 @@ private fun capture(
     controller: LifecycleCameraController,
     viewModel: CameraViewModel,
     state: CameraUiState,
+    executor: Executor,
 ) {
     viewModel.setCapturing(true)
     vibrate(context)
     controller.takePicture(
-        ContextCompat.getMainExecutor(context),
+        executor,
         object : ImageCapture.OnImageCapturedCallback() {
             override fun onCaptureSuccess(image: ImageProxy) {
                 try {
@@ -799,26 +1131,40 @@ private fun capture(
                     if (graded !== cropped) cropped.recycle()
                     viewModel.showReview(graded)
                 } catch (error: Exception) {
-                    viewModel.setCapturing(false)
-                    Toast.makeText(
-                        context,
-                        context.getString(R.string.grade_failed, error.message ?: ""),
-                        Toast.LENGTH_SHORT,
-                    ).show()
+                    viewModel.captureFailed(
+                        UiText(R.string.grade_failed, listOf(error.message ?: "")),
+                    )
                 } finally {
                     image.close()
                 }
             }
 
             override fun onError(exception: ImageCaptureException) {
-                viewModel.setCapturing(false)
-                Toast.makeText(
-                    context,
-                    context.getString(R.string.capture_failed, exception.message ?: ""),
-                    Toast.LENGTH_SHORT,
-                ).show()
+                viewModel.captureFailed(
+                    UiText(R.string.capture_failed, listOf(exception.message ?: "")),
+                )
             }
         },
+    )
+}
+
+private fun openSavedPhoto(context: android.content.Context, uri: Uri) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+        )
+    }
+}
+
+private fun thumbnailFrom(bitmap: Bitmap, targetPx: Int): Bitmap {
+    val longest = max(bitmap.width, bitmap.height)
+    if (longest <= targetPx) return bitmap
+    val scale = targetPx.toFloat() / longest
+    return Bitmap.createScaledBitmap(
+        bitmap,
+        (bitmap.width * scale).toInt().coerceAtLeast(1),
+        (bitmap.height * scale).toInt().coerceAtLeast(1),
+        true,
     )
 }
 
@@ -833,12 +1179,20 @@ private fun ImageProxy.toRotatedBitmap(mirror: Boolean): Bitmap {
     return rotated
 }
 
-private fun vibrate(context: android.content.Context) {
+private fun vibrate(context: android.content.Context, durationMs: Long = 35L, amplitude: Int = 70) {
     val vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
         context.getSystemService(VibratorManager::class.java).defaultVibrator
     } else {
         @Suppress("DEPRECATION")
         context.getSystemService(Vibrator::class.java)
     }
-    vibrator.vibrate(VibrationEffect.createOneShot(35, 70))
+    vibrator.vibrate(VibrationEffect.createOneShot(durationMs, amplitude))
+}
+
+@RequiresApi(Build.VERSION_CODES.S)
+private fun lookRenderEffect(look: FilterLook): ComposeRenderEffect? {
+    if (look == FilterLook.NEUTRAL) return null
+    return AndroidRenderEffect.createColorFilterEffect(
+        android.graphics.ColorMatrixColorFilter(look.colorMatrix()),
+    ).asComposeRenderEffect()
 }
