@@ -4,8 +4,12 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.VectorConverter
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
@@ -25,9 +29,34 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
+import com.lenscoach.android.camera.SceneCue
 import com.lenscoach.android.ui.Viewfinder
+import kotlin.math.atan2
+import kotlin.math.cos
 import kotlin.math.min
+import kotlin.math.sin
 import kotlinx.coroutines.launch
+
+/**
+ * Canvas drawing works in pixels; keep every stroke in dp so the overlay looks
+ * the same across densities.
+ */
+private data class OverlayMetrics(
+    val thirdsStroke: Float,
+    val boxStroke: Float,
+    val frameStroke: Float,
+    val frameStrokeAligned: Float,
+    val scanStroke: Float,
+    val horizonStroke: Float,
+    val focusRadius: Float,
+    val focusStroke: Float,
+    val focusDot: Float,
+    val arrowLen: Float,
+    val arrowStroke: Float,
+    val faceCorner: CornerRadius,
+)
 
 @Composable
 fun CompositionOverlay(
@@ -39,8 +68,26 @@ fun CompositionOverlay(
     lockEpoch: Long = 0L,
     focusPoint: Offset?,
     horizonDegrees: Float,
+    cue: SceneCue = SceneCue.NONE,
+    cueSubject: Rect? = null,
     modifier: Modifier = Modifier,
 ) {
+    val metrics = with(LocalDensity.current) {
+        OverlayMetrics(
+            thirdsStroke = 1.dp.toPx(),
+            boxStroke = 1.dp.toPx(),
+            frameStroke = 1.6.dp.toPx(),
+            frameStrokeAligned = 2.4.dp.toPx(),
+            scanStroke = 1.dp.toPx(),
+            horizonStroke = 1.6.dp.toPx(),
+            focusRadius = 16.dp.toPx(),
+            focusStroke = 2.dp.toPx(),
+            focusDot = 2.5.dp.toPx(),
+            arrowLen = 44.dp.toPx(),
+            arrowStroke = 3.dp.toPx(),
+            faceCorner = CornerRadius(6.dp.toPx(), 6.dp.toPx()),
+        )
+    }
     val displayed = remember { Animatable(Rect.Zero, Rect.VectorConverter) }
     var booted by remember { mutableStateOf(false) }
     val bracket = remember { Animatable(1f) }
@@ -56,6 +103,13 @@ fun CompositionOverlay(
         targetValue = if (frame.width > 8f) 0.58f else 0f,
         animationSpec = tween(durationMillis = 280, easing = FastOutSlowInEasing),
         label = "dimAlpha",
+    )
+    val cueTransition = rememberInfiniteTransition(label = "cuePulse")
+    val cueAlpha by cueTransition.animateFloat(
+        initialValue = 0.45f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(650), RepeatMode.Reverse),
+        label = "cueAlpha",
     )
 
     LaunchedEffect(frame, frameLocked) {
@@ -127,25 +181,25 @@ fun CompositionOverlay(
             thirds,
             Offset(thirdsRect.left + thirdsRect.width / 3f, thirdsRect.top),
             Offset(thirdsRect.left + thirdsRect.width / 3f, thirdsRect.bottom),
-            1.2f,
+            metrics.thirdsStroke,
         )
         drawLine(
             thirds,
             Offset(thirdsRect.left + thirdsRect.width * 2f / 3f, thirdsRect.top),
             Offset(thirdsRect.left + thirdsRect.width * 2f / 3f, thirdsRect.bottom),
-            1.2f,
+            metrics.thirdsStroke,
         )
         drawLine(
             thirds,
             Offset(thirdsRect.left, thirdsRect.top + thirdsRect.height / 3f),
             Offset(thirdsRect.right, thirdsRect.top + thirdsRect.height / 3f),
-            1.2f,
+            metrics.thirdsStroke,
         )
         drawLine(
             thirds,
             Offset(thirdsRect.left, thirdsRect.top + thirdsRect.height * 2f / 3f),
             Offset(thirdsRect.right, thirdsRect.top + thirdsRect.height * 2f / 3f),
-            1.2f,
+            metrics.thirdsStroke,
         )
 
         if (!frameLocked) {
@@ -154,8 +208,8 @@ fun CompositionOverlay(
                     color = Color.White.copy(alpha = 0.18f),
                     topLeft = face.topLeft,
                     size = Size(face.width, face.height),
-                    cornerRadius = CornerRadius(12f, 12f),
-                    style = Stroke(width = 1.4f),
+                    cornerRadius = metrics.faceCorner,
+                    style = Stroke(width = metrics.boxStroke),
                 )
             }
             objects.forEach { box ->
@@ -163,8 +217,8 @@ fun CompositionOverlay(
                     color = Viewfinder.Accent.copy(alpha = 0.16f),
                     topLeft = box.topLeft,
                     size = Size(box.width, box.height),
-                    cornerRadius = CornerRadius(10f, 10f),
-                    style = Stroke(width = 1.1f),
+                    cornerRadius = metrics.faceCorner,
+                    style = Stroke(width = metrics.boxStroke),
                 )
             }
         }
@@ -179,14 +233,14 @@ fun CompositionOverlay(
                 cx + crop.width * 0.5f * scale,
                 cy + crop.height * 0.5f * scale,
             )
-            val stroke = if (aligned) 4.4f else 3f
+            val stroke = if (aligned) metrics.frameStrokeAligned else metrics.frameStroke
             val arm = min(drawn.width, drawn.height) * 0.16f * bracketProgress
             drawCornerBrackets(drawn, frameColor, stroke, arm)
             drawRect(
                 color = frameColor.copy(alpha = 0.16f),
                 topLeft = drawn.topLeft,
                 size = Size(drawn.width, drawn.height),
-                style = Stroke(width = 1.2f),
+                style = Stroke(width = metrics.thirdsStroke),
             )
             if (scanA > 0.02f) {
                 val y = drawn.top + drawn.height * scanT
@@ -194,9 +248,68 @@ fun CompositionOverlay(
                     color = frameColor.copy(alpha = scanA),
                     start = Offset(drawn.left + 8f, y),
                     end = Offset(drawn.right - 8f, y),
-                    strokeWidth = 1.6f,
+                    strokeWidth = metrics.scanStroke,
                     cap = StrokeCap.Round,
                 )
+            }
+        }
+
+        if (!frameLocked && cue != SceneCue.NONE) {
+            val color = Viewfinder.Accent.copy(alpha = cueAlpha)
+            val pad = size.width * 0.04f
+            val len = metrics.arrowLen
+            val stroke = metrics.arrowStroke
+            when (cue) {
+                SceneCue.MOVE_LEFT, SceneCue.MOVE_RIGHT -> {
+                    val anchor = cueSubject?.center ?: Offset(size.width / 2f, size.height / 2f)
+                    val cx = anchor.x.coerceIn(pad + len, size.width - pad - len)
+                    val cy = anchor.y.coerceIn(pad + len, size.height - pad - len)
+                    if (cue == SceneCue.MOVE_LEFT) {
+                        drawArrow(Offset(cx + len / 2f, cy), Offset(cx - len / 2f, cy), color, stroke)
+                    } else {
+                        drawArrow(Offset(cx - len / 2f, cy), Offset(cx + len / 2f, cy), color, stroke)
+                    }
+                }
+                SceneCue.MOVE_CLOSER, SceneCue.MOVE_BACK -> {
+                    val half = 1f
+                    val s = cueSubject ?: Rect(
+                        size.width / 2f - half,
+                        size.height / 2f - half,
+                        size.width / 2f + half,
+                        size.height / 2f + half,
+                    )
+                    val cy = s.center.y.coerceIn(pad, size.height - pad)
+                    val leftX = s.left - pad
+                    val rightX = s.right + pad
+                    if (cue == SceneCue.MOVE_CLOSER) {
+                        drawArrow(
+                            Offset((leftX - len).coerceAtLeast(pad), cy),
+                            Offset(leftX.coerceAtMost(size.width - pad), cy),
+                            color,
+                            stroke,
+                        )
+                        drawArrow(
+                            Offset((rightX + len).coerceAtMost(size.width - pad), cy),
+                            Offset(rightX.coerceAtLeast(pad), cy),
+                            color,
+                            stroke,
+                        )
+                    } else {
+                        drawArrow(
+                            Offset(leftX.coerceAtLeast(pad), cy),
+                            Offset((leftX - len).coerceAtLeast(pad), cy),
+                            color,
+                            stroke,
+                        )
+                        drawArrow(
+                            Offset(rightX.coerceAtMost(size.width - pad), cy),
+                            Offset((rightX + len).coerceAtMost(size.width - pad), cy),
+                            color,
+                            stroke,
+                        )
+                    }
+                }
+                SceneCue.NONE -> Unit
             }
         }
 
@@ -207,7 +320,7 @@ fun CompositionOverlay(
                     color = Viewfinder.Hazard,
                     start = Offset(size.width * 0.18f, y),
                     end = Offset(size.width * 0.82f, y),
-                    strokeWidth = 2f,
+                    strokeWidth = metrics.horizonStroke,
                     cap = StrokeCap.Round,
                 )
             }
@@ -216,13 +329,13 @@ fun CompositionOverlay(
         focusPoint?.let { point ->
             drawCircle(
                 color = Viewfinder.Accent.copy(alpha = 0.95f),
-                radius = 38f,
+                radius = metrics.focusRadius,
                 center = point,
-                style = Stroke(width = 2.2f),
+                style = Stroke(width = metrics.focusStroke),
             )
             drawCircle(
                 color = Viewfinder.Accent.copy(alpha = 0.45f),
-                radius = 5f,
+                radius = metrics.focusDot,
                 center = point,
             )
         }
@@ -253,4 +366,30 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCornerBrackets(
             )
         }
     }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawArrow(
+    from: Offset,
+    to: Offset,
+    color: Color,
+    stroke: Float,
+) {
+    drawLine(color, from, to, stroke, cap = StrokeCap.Round)
+    val angle = atan2(to.y - from.y, to.x - from.x)
+    val headLen = ((to - from).getDistance() * 0.32f).coerceAtLeast(stroke * 3f)
+    val spread = 0.5f
+    drawLine(
+        color,
+        to,
+        Offset(to.x - cos(angle + spread) * headLen, to.y - sin(angle + spread) * headLen),
+        stroke,
+        cap = StrokeCap.Round,
+    )
+    drawLine(
+        color,
+        to,
+        Offset(to.x - cos(angle - spread) * headLen, to.y - sin(angle - spread) * headLen),
+        stroke,
+        cap = StrokeCap.Round,
+    )
 }

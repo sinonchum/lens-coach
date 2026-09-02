@@ -6,16 +6,18 @@ import android.graphics.ColorMatrix
 import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import androidx.annotation.StringRes
+import androidx.compose.ui.graphics.Color
 import com.lenscoach.android.R
 
 enum class FilterLook(
     @StringRes val labelRes: Int,
+    val swatch: Color,
 ) {
-    NEUTRAL(R.string.filter_neutral),
-    SOFT(R.string.filter_soft),
-    CINEMA(R.string.filter_cinema),
-    DOCUMENTARY(R.string.filter_documentary),
-    HIGH_CONTRAST(R.string.filter_high_contrast);
+    NEUTRAL(R.string.filter_neutral, Color(0xFFDADDE1)),
+    SOFT(R.string.filter_soft, Color(0xFFE9CDB0)),
+    CINEMA(R.string.filter_cinema, Color(0xFF2F5D66)),
+    DOCUMENTARY(R.string.filter_documentary, Color(0xFF9C8A63)),
+    HIGH_CONTRAST(R.string.filter_high_contrast, Color(0xFF0F1113));
 
     fun grade(source: Bitmap): Bitmap {
         if (this == NEUTRAL) return source
@@ -27,7 +29,7 @@ enum class FilterLook(
         return out
     }
 
-    private fun colorMatrix(): ColorMatrix {
+    fun colorMatrix(): ColorMatrix {
         val contrast: Float
         val brightness: Float
         val saturation: Float

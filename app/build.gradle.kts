@@ -12,13 +12,14 @@ android {
         applicationId = "com.lenscoach.android"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.4.2"
+        versionCode = 9
+        versionName = "0.4.3-rc2"
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
@@ -63,4 +64,6 @@ dependencies {
     implementation("com.google.mlkit:face-detection:16.1.7")
     implementation("com.google.mlkit:image-labeling:17.0.8")
     implementation("com.google.mlkit:object-detection:17.0.2")
+
+    testImplementation("junit:junit:4.13.2")
 }
